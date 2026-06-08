@@ -336,29 +336,27 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
 });
 router.get("/outsideRequest", rateLimiter, async (req, res) => {
   try {
+   
     const { headId } = req.query;
-
+ console.log("came to outsideRequest")
     if (!headId) {
       return res.status(400).json({ message: "headId is required" });
     }
 
-    // Verify head exists and has Role: head
+  
     const head = await usermodel.findById(headId);
     if (!head || head.Role !== "head") {
       return res.status(403).json({ message: "Unauthorized: only heads can view requests" });
     }
 
-    // Find all employees in same department
     const employees = await usermodel.find({
       Department: head.Department,
-      Role: { $ne: "head" }, // exclude other heads
+      Role: { $ne: "head" }, 
     }).select("_id Name Email");
 
     const employeeIds = employees.map((e) => e._id);
 
-    // Find today's attendance records where:
-    // - employee is in same department
-    // - either In_time or Out_time is outside AND not yet approved
+    
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -373,7 +371,6 @@ router.get("/outsideRequest", rateLimiter, async (req, res) => {
       ],
     });
 
-    // Attach employee name and email to each record
     const result = pendingRequests.map((record) => {
       const employee = employees.find(
         (e) => e._id.toString() === record.id.toString()
