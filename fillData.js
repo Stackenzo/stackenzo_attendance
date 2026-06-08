@@ -335,8 +335,9 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
   }
 });
 router.get("/outsideRequest", rateLimiter, async (req, res) => {
+       console.log("came to outsideRequest")
   try {
-    console.log("came to outsideRequest")
+ 
     const { headId } = req.query;
 
     if (!headId) {
