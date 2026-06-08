@@ -336,9 +336,9 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
 });
 router.get("/outsideRequest", rateLimiter, async (req, res) => {
   try {
-    console.log("came to outsideRequest")
+   
     const { headId } = req.query;
-
+ console.log("came to outsideRequest")
     if (!headId) {
       return res.status(400).json({ message: "headId is required" });
     }
