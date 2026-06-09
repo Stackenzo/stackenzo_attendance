@@ -1,21 +1,9 @@
-<<<<<<< HEAD
-
 
 services:
-  
   backend:
     build: .
-    container_name: car24-backend
+    container_name: stackenzo_emp
     restart: always
     ports:
       - "3000:3000"
     
-=======
-services: 
- backend: 
-  build: .
-  container_name: stackenzo_Emp_backend
-  restart: always
-  ports:
-    - "3000:3000"
->>>>>>> 051b238 (Initial attendance changes)
