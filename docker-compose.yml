@@ -1,0 +1,11 @@
+
+
+services:
+  
+  backend:
+    build: .
+    container_name: car24-backend
+    restart: always
+    ports:
+      - "3000:3000"
+    
