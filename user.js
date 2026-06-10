@@ -74,28 +74,27 @@ router.put("/verifyuserRegister", rateLimiter, async (req, res) => {
 router.post("/userLogin", rateLimiter, async (req, res) => {
   const { email, password } = req.body;
 
-  // 1. Basic Validation
+
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required" });
   }
 
   try {
-    // 2. Find user in MongoDB
+
     const user = await usermodel.findOne({ Email: email });
 
-    // 3. User Existence Check
     if (!user) {
       return res.status(400).json({ message: "User not registered" });
     }
 
-    // 4. Block if pending deletion
+
     if (user.status === "pending_deletion") {
       return res.status(403).json({
         message: "Your account is deactivated and scheduled for permanent deletion.",
       });
     }
 
-    // 5. Password Verification
+
     if (user.password) {
       const correctPassword = await bcrypt.compare(password, user.password);
       if (!correctPassword) {
@@ -103,13 +102,12 @@ router.post("/userLogin", rateLimiter, async (req, res) => {
       }
     }
 
-    // 6. Unverified account — send verification token
-    if (!user.is_verified) {
+    if (!user.verified) {
       const token = await createJwt({ email: user.Email, id: user._id, userType: "client" });
       return res.status(401).json({ Verification_token: token });
     }
 
-    // 7. Successful login token
+
     const token = await createJwt({
       id: user._id,
       Name: user.Name,
