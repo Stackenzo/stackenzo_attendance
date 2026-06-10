@@ -5,8 +5,8 @@ const {createJwt,veriftJWT}=require("./jwt")
 const {usermodel,userDatamodel,fire_db}=require("./db");
 const rateLimiter = require("./rateLimiter");
 
-const OFFICE_LAT = 12.9716;   
-const OFFICE_LNG = 77.5946;
+const OFFICE_LAT = 14.407513;   
+const OFFICE_LNG = 79.949118;
 const ALLOWED_RADIUS_METERS = 100; 
 
 function getDistanceInMeters(lat1, lng1, lat2, lng2) {
