@@ -404,7 +404,11 @@ router.get("/outsideRequest", rateLimiter, async (req, res) => {
 router.get("/get_emp_status", rateLimiter, async (req, res) => {
   console.log("came to get emp status");
 
-  const id = "6a290d55eb627f8ef7609262";
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ message: "User ID is required" });
+  }
 
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
