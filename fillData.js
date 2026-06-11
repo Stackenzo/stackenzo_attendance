@@ -98,6 +98,7 @@ router.post("/out-time", rateLimiter, async (req, res) => {
     if (!lat || !lng || !time || !task) {
       return res.status(400).json({ message: "lat, lng, time and task are required" });
     }
+    console.log(time)
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
