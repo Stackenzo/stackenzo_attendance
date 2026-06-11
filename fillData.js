@@ -197,10 +197,7 @@ console.log(todayRecord)
 
    
     const isOutsideField = type === "In_Time" ? "In_time_outside" : "Out_time_outside";
-    if (!todayRecord[isOutsideField]) {
-      return res.status(400).json({ message: `${type} is not marked as outside` });
-    }
-
+  
     
     const reasonField = type === "In_Time" ? "In_Time_reason" : "Out_time_reason";
     await userDatamodel.findByIdAndUpdate(todayRecord._id, {
