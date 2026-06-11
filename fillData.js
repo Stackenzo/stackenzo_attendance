@@ -412,26 +412,27 @@ router.get("/get_emp_status", rateLimiter, async (req, res) => {
 
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
-
   const endOfDay = new Date();
   endOfDay.setHours(23, 59, 59, 999);
 
   const check = await userDatamodel.findOne({
-    id: id,
+    id: userId,
     createdAt: {
       $gte: startOfDay,
       $lte: endOfDay,
     },
   });
 
-
-
   if (!check) {
     return res.status(202).json({ message: "Today you didn't provide attendance" });
   }
 
   if (!check.Out_time) {
-    return res.status(203).json({ message: "Today you didn't provide out time" });
+    // FIXED: Added 'data: check' so the frontend can read the In_Time!
+    return res.status(203).json({ 
+      message: "Today you didn't provide out time",
+      data: check 
+    });
   }
 
   return res.status(200).json({
