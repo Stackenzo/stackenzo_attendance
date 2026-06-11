@@ -19,6 +19,11 @@ const users = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      unique:true
+    },
+    Role:{
+type:String,
+trim:true
     },
     password:{
         type:String,

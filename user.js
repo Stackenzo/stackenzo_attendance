@@ -115,7 +115,7 @@ router.post("/userLogin", rateLimiter, async (req, res) => {
       email: user.Email,
       userType: "client",
     });
-
+console.log(token)
     if (!token) {
       return res.status(500).json({ message: "JWT creation error" });
     }
