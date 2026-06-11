@@ -94,11 +94,12 @@ router.post("/in-time", rateLimiter, async (req, res) => {
 });
 router.post("/out-time", rateLimiter, async (req, res) => {
   try {
-    const { lat, lng, time, task, T_reason, remarks,userId } = req.body;
-    if (!lat || !lng || !time || !task) {
-      return res.status(400).json({ message: "lat, lng, time and task are required" });
+    const { lat, lng, time, task, T_reason, remarks, userId } = req.body;
+
+    if (!lat || !lng || !time || !task || !userId) {
+      return res.status(400).json({ message: "lat, lng, time, task and userId are required" });
     }
-    console.log(time)
+
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -108,55 +109,83 @@ router.post("/out-time", rateLimiter, async (req, res) => {
       id: userId,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
+
     if (!todayRecord || !todayRecord.In_Time) {
       return res.status(400).json({ message: "In time is not recorded for today" });
     }
+
     if (todayRecord.Out_time) {
       return res.status(400).json({ message: "Out time already marked for today" });
     }
+
     const distance = getDistanceInMeters(
       parseFloat(lat),
       parseFloat(lng),
       OFFICE_LAT,
       OFFICE_LNG
     );
+
     const isOutside = distance > ALLOWED_RADIUS_METERS;
-const parseTime = (timeStr) => {
-  const [time, modifier] = timeStr.split(" ");
-  let [hours, minutes] = time.split(":").map(Number);
-  if (modifier === "PM" && hours !== 12) hours += 12;
-  if (modifier === "AM" && hours === 12) hours = 0;
-  return hours * 60 + minutes; 
-};
 
-const inMinutes = parseTime(todayRecord.In_Time);
-const outMinutes = parseTime(time);
-const totalMinutes = outMinutes - inMinutes;
+    // ✅ Robust time parser — handles "6:11 PM", "06:11 PM", "12:00 AM", "12:00 PM"
+    const parseTimeToMinutes = (timeStr) => {
+      const cleaned = timeStr.trim().replace(/\s+/g, " "); // remove extra spaces
+      const match = cleaned.match(/^(\d{1,2}):(\d{2})\s?(AM|PM)$/i);
 
-if (totalMinutes <= 0) {
-  return res.status(400).json({ message: "Out time must be after In time" });
-}
+      if (!match) {
+        console.error("Invalid time format:", JSON.stringify(timeStr));
+        return null;
+      }
 
-const hoursWorked = Math.floor(totalMinutes / 60);
-const minutesWorked = totalMinutes % 60;
-const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
+      let hours = parseInt(match[1], 10);
+      let minutes = parseInt(match[2], 10);
+      const modifier = match[3].toUpperCase();
+
+      if (modifier === "PM" && hours !== 12) hours += 12;
+      if (modifier === "AM" && hours === 12) hours = 0;
+
+      return hours * 60 + minutes;
+    };
+
+    const inMinutes = parseTimeToMinutes(todayRecord.In_Time);
+    const outMinutes = parseTimeToMinutes(time);
+
+    console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
+    console.log("Out_Time raw:", JSON.stringify(time));
+    console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
+
+    if (inMinutes === null || outMinutes === null) {
+      return res.status(400).json({ message: "Invalid time format. Expected format: '6:11 PM'" });
+    }
+
+    if (outMinutes <= inMinutes) {
+      return res.status(400).json({ message: "Out time must be after In time" });
+    }
+
+    const totalMinutes = outMinutes - inMinutes;
+    const hoursWorked = Math.floor(totalMinutes / 60);
+    const minutesWorked = totalMinutes % 60;
+    const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
+
+    console.log("totalHoursStr:", totalHoursStr);
+
     const updated = await userDatamodel.findByIdAndUpdate(
       todayRecord._id,
       {
-        Out_time: time,
+        Out_time: time.trim(),
         Out_time_outside: isOutside,
         Todays_Task: task,
         reason_for_task_delay: T_reason || "",
         remarks: remarks || "",
-          total_hours: totalHoursStr,
+        total_hours: totalHoursStr,
       },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     return res.status(200).json({
       success: true,
       message: isOutside
-        ? "Out time marked — but you are outside office premises .send approval to your Head"
+        ? "Out time marked — but you are outside office premises. Send approval to your Head"
         : "Out time marked successfully",
       isOutside,
       distance_meters: Math.round(distance),
@@ -464,4 +493,70 @@ res.status(201).json({message:"successfully added department"})
   }
 
 })
+router.post("/getAttendance", rateLimiter, async (req, res) => {
+  try {
+    const { userId, filter } = req.body; // filter: "today" | "week" | "month" | "all"
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    let dateFilter = {};
+
+    if (filter === "today") {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+      dateFilter = { createdAt: { $gte: startOfDay, $lte: endOfDay } };
+
+    } else if (filter === "week") {
+      const startOfWeek = new Date();
+      startOfWeek.setDate(startOfWeek.getDate() - 7);
+      startOfWeek.setHours(0, 0, 0, 0);
+      dateFilter = { createdAt: { $gte: startOfWeek } };
+
+    } else if (filter === "month") {
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+      dateFilter = { createdAt: { $gte: startOfMonth } };
+    }
+
+
+    const attendance = await userDatamodel
+      .find({ id: userId, ...dateFilter })
+      .sort({ createdAt: -1 }); 
+
+    if (!attendance || attendance.length === 0) {
+      return res.status(404).json({ message: "No attendance records found" });
+    }
+
+    const totalDays = attendance.length;
+    const totalHoursWorked = attendance.reduce((acc, record) => {
+      if (!record.total_hours) return acc;
+      const match = record.total_hours.match(/(\d+)h\s(\d+)m/);
+      if (!match) return acc;
+      return acc + parseInt(match[1]) * 60 + parseInt(match[2]);
+    }, 0);
+
+    const avgMinutesPerDay = totalDays > 0 ? Math.round(totalHoursWorked / totalDays) : 0;
+
+    return res.status(200).json({
+      success: true,
+      total_days: totalDays,
+      total_hours: `${Math.floor(totalHoursWorked / 60)}h ${totalHoursWorked % 60}m`,
+      avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
+      attendance,
+    });
+
+  } catch (error) {
+    console.error("getAttendance error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
 module.exports = router;
