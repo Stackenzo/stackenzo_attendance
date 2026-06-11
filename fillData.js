@@ -414,12 +414,13 @@ router.get("/get_emp_status", rateLimiter, async (req, res) => {
 
 
   if (!check) {
-    return res.status(200).json({ message: "Today you didn't provide attendance" });
+    return res.status(202).json({ message: "Today you didn't provide attendance" });
   }
 
   if (!check.Out_time) {
-    return res.status(200).json({ message: "Today you didn't provide out time" });
+    return res.status(203).json({ message: "Today you didn't provide out time" });
   }
+
   return res.status(200).json({
     success: true,
     data: check,
