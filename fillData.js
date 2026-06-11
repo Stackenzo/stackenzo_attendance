@@ -42,7 +42,6 @@ router.post("/in-time", rateLimiter, async (req, res) => {
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
-    // Check if attendance already exists today
     const existingAttendance = await userDatamodel.findOne({
       id: userId,
       createdAt: {
@@ -95,14 +94,9 @@ router.post("/in-time", rateLimiter, async (req, res) => {
 router.post("/out-time", rateLimiter, async (req, res) => {
   try {
     const { lat, lng, time, task, T_reason, remarks,userId } = req.body;
-
-
-
     if (!lat || !lng || !time || !task) {
       return res.status(400).json({ message: "lat, lng, time and task are required" });
     }
-
-
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -112,18 +106,12 @@ router.post("/out-time", rateLimiter, async (req, res) => {
       id: userId,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
-
-
     if (!todayRecord || !todayRecord.In_Time) {
       return res.status(400).json({ message: "In time is not recorded for today" });
     }
-
-
     if (todayRecord.Out_time) {
       return res.status(400).json({ message: "Out time already marked for today" });
     }
-
-    
     const distance = getDistanceInMeters(
       parseFloat(lat),
       parseFloat(lng),
@@ -131,13 +119,12 @@ router.post("/out-time", rateLimiter, async (req, res) => {
       OFFICE_LNG
     );
     const isOutside = distance > ALLOWED_RADIUS_METERS;
-
 const parseTime = (timeStr) => {
   const [time, modifier] = timeStr.split(" ");
   let [hours, minutes] = time.split(":").map(Number);
   if (modifier === "PM" && hours !== 12) hours += 12;
   if (modifier === "AM" && hours === 12) hours = 0;
-  return hours * 60 + minutes; // return total minutes
+  return hours * 60 + minutes; 
 };
 
 const inMinutes = parseTime(todayRecord.In_Time);
@@ -186,12 +173,9 @@ const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
 router.post("/sendOutsideReason", rateLimiter, async (req, res) => {
   try {
     const { reason, type ,userId} = req.body; 
-
-
     if (!reason || !type) {
       return res.status(400).json({ message: "reason and type are required" });
     }
-
     if (type !== "In_Time" && type !== "Out_time") {
       return res.status(400).json({ message: "type must be 'In_Time' or 'Out_time'" });
     }
@@ -407,5 +391,38 @@ router.get("/outsideRequest", rateLimiter, async (req, res) => {
       error: e.message,
     });
   }
+});
+router.get("/get_emp_status", rateLimiter, async (req, res) => {
+  console.log("came to get emp status");
+
+  const id = "6a290d55eb627f8ef7609262";
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const check = await userDatamodel.findOne({
+    id: id,
+    createdAt: {
+      $gte: startOfDay,
+      $lte: endOfDay,
+    },
+  });
+
+
+
+  if (!check) {
+    return res.status(200).json({ message: "Today you didn't provide attendance" });
+  }
+
+  if (!check.Out_time) {
+    return res.status(200).json({ message: "Today you didn't provide out time" });
+  }
+  return res.status(200).json({
+    success: true,
+    data: check,
+  });
 });
 module.exports = router;
