@@ -29,11 +29,7 @@ const users = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    Role: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+
     Department: {
       type: String,
       required: true,
@@ -59,6 +55,11 @@ const users_data = new mongoose.Schema(
     },
     In_Time: {
       type: String,
+      trim: true,
+      default: "",
+    },
+   delay_in_reason:{
+type: String,
       trim: true,
       default: "",
     },
@@ -120,6 +121,22 @@ const users_data = new mongoose.Schema(
   },
   { timestamps: true }
 );
+const department = new mongoose.Schema(
+  {
+    headId:{
+      type:mongoose.Schema.ObjectId,
+      ref:"user"
+    },
+    deptId:{
+      type:String,
+    unique: true,
+    },
+Department:{
+  type:String
+},   
+  },
+  { timestamps: true }
+);
 const usermodel = mongoose.model(
   "user",
   users
@@ -128,6 +145,10 @@ const userDatamodel = mongoose.model(
   "user_data",
   users_data
 );
+const departments=mongoose.model(
+  "department",
+  department
+)
 const redis = new Redis("redis://100.117.158.50:6379", {
     
   retryStrategy: (times) => {
@@ -169,4 +190,4 @@ async function connectdb() {
   }
 }
 
-module.exports = { usermodel,userDatamodel, connectdb,redis ,fire_db};
+module.exports = { usermodel,userDatamodel, connectdb,redis ,fire_db,departments};

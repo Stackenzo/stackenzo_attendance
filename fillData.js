@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const {createJwt,veriftJWT}=require("./jwt")
-const {usermodel,userDatamodel,fire_db}=require("./db");
+const {usermodel,userDatamodel,departments,fire_db, }=require("./db");
 const rateLimiter = require("./rateLimiter");
 
 const OFFICE_LAT = 14.407513;   
@@ -28,7 +28,7 @@ function getDistanceInMeters(lat1, lng1, lat2, lng2) {
 }
 router.post("/in-time", rateLimiter, async (req, res) => {
   try {
-    const { lat, lng, time,userId } = req.body;
+    const { lat, lng, time,userId,delay_in_reason } = req.body;
 
     if (!lat || !lng || !time) {
       return res.status(400).json({
@@ -70,6 +70,7 @@ router.post("/in-time", rateLimiter, async (req, res) => {
       id: userId,
       In_Time: time,
       In_time_outside: isOutside,
+      delay_in_reason:delay_in_reason
     });
 
     return res.status(201).json({
@@ -212,8 +213,7 @@ console.log(todayRecord)
       return res.status(404).json({ message: "User not found" });
     }
 
-    const head = await usermodel.findOne({
-      Role: "head",
+    const head = await departments.findOne({
       Department: currentUser.Department,
     });
 
@@ -221,7 +221,7 @@ console.log(todayRecord)
       return res.status(404).json({ message: "No head found for your department" });
     }
 
-    const notificationRef = fire_db.ref(`notifications/${head._id}`).push();
+    const notificationRef = fire_db.ref(`notifications/${head.id}`).push();
     await notificationRef.set({
       from_user_id: userId.toString(),
       from_name: currentUser.Name,
@@ -248,6 +248,15 @@ console.log(todayRecord)
     });
   }
 });
+router.get("/getDepartments",rateLimiter,async(req,res)=>{
+  const allDepartment=await departments.find({}) .populate("headId", "Name Email");
+  if(!allDepartment){
+    return res.status(500).json({message:"internal server error"})
+  }
+  console.log(allDepartment)
+  res.status(200).json({data:allDepartment})
+  
+})
 router.put("/approveOutside", rateLimiter, async (req, res) => {
   try {
     const { attendanceId, employeeId, type, action, headId } = req.body;
@@ -426,4 +435,30 @@ router.get("/get_emp_status", rateLimiter, async (req, res) => {
     data: check,
   });
 });
+router.post("/addDepartment",rateLimiter,async(req,res)=>{
+try{
+      const{deptName,headId,deptId}=req.body
+if(!deptName||!headId||!deptId){
+  return res.status(400).json({message:"all feilds are required"})
+}
+const addDept=await departments.create({
+  headId:headId,
+      deptId:deptId,
+
+  Department:deptName
+})
+if(!addDept){
+  res.status(400).json({message:"error at adding data in departments"})
+}
+res.status(201).json({message:"successfully added department"})
+}catch (error) {
+    console.error("In-Time error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+
+})
 module.exports = router;
