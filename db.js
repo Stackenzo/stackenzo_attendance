@@ -2,7 +2,9 @@ const mongoose = require("mongoose");
 require("dotenv").config();
 const serviceAccount = require("./stackenzoemp-firebase-adminsdk-fbsvc-85118c0cce.json")
 const admin = require("firebase-admin");
-const Redis = require("ioredis");
+// const Redis = require("ioredis");
+const { createClient } = require("redis");
+
 admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://stackenzoemp-default-rtdb.firebaseio.com"
@@ -154,13 +156,23 @@ const departments=mongoose.model(
   "department",
   department
 )
-const redis = new Redis("redis://100.117.158.50:6379", {
+// const redis = new Redis("redis://100.117.158.50:6379", {
     
-  retryStrategy: (times) => {
-    console.log("Retrying Redis...", times);
-    return Math.min(times * 100, 2000);
-  }
+//   retryStrategy: (times) => {
+//     console.log("Retrying Redis...", times);
+//     return Math.min(times * 100, 2000);
+//   }
+// });
+const redis = createClient({
+    username: 'default',
+    password: '*******',
+    socket: {
+        host: 'suggestion-iris-moon-49927.db.redis.io',
+        port: 11198
+    }
 });
+
+
 redis.on("connect", () => {
   console.log("✅ Redis TCP connection established");
 });
@@ -180,6 +192,16 @@ redis.on("close", () => {
 redis.on("reconnecting", () => {
   console.log("🔄 Reconnecting to Redis...");
 });
+async function connectRedis() {
+  try {
+    if (!redis.isOpen) {
+      await redis.connect();
+      console.log("✅ Redis connected");
+    }
+  } catch (err) {
+    console.error("❌ Redis connection failed:", err);
+  }
+}
 async function connectdb() {
   try {
     console.log("mongoURI:", process.env.mongo_URI);
@@ -187,6 +209,7 @@ async function connectdb() {
       return false
     }
     await mongoose.connect(process.env.mongo_URI);
+    await connectRedis()
     console.log("Connected to DB");
     return true;
   } catch (e) {

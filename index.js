@@ -11,7 +11,7 @@ try{
     console.log("error at loding env file",e)
 }
 
-const port=3000
+const port=3001
 const app= express()
 app.use(express.json()); 
 connectdb()
