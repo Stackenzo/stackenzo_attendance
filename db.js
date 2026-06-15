@@ -165,7 +165,7 @@ const departments=mongoose.model(
 // });
 const redis = createClient({
     username: 'default',
-    password: '*******',
+    password: 'WM68ZTm1I2QCuVnzVofuRaC8VzjfcK5L',
     socket: {
         host: 'suggestion-iris-moon-49927.db.redis.io',
         port: 11198
