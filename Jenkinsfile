@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        SERVER = "thofu@100.117.158.50"
+        SERVER = "thofu@100.126.182.3"
         APP_DIR = "/var/www/stackenzo_attendance"
         BRANCH = "main"
     }
