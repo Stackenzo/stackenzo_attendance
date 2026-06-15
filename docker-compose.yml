@@ -4,4 +4,4 @@ services:
     container_name: stackenzo_emp
     restart: always
     ports:
-      - "3000:3000"
+      - "3002:3002"
