@@ -542,13 +542,38 @@ router.post("/getAttendance", rateLimiter, async (req, res) => {
 
     const avgMinutesPerDay = totalDays > 0 ? Math.round(totalHoursWorked / totalDays) : 0;
 
-    return res.status(200).json({
-      success: true,
-      total_days: totalDays,
-      total_hours: `${Math.floor(totalHoursWorked / 60)}h ${totalHoursWorked % 60}m`,
-      avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
-      attendance,
-    });
+   return res.status(200).json({
+  success: true,
+  total_days: totalDays,
+  total_hours: `${Math.floor(totalHoursWorked / 60)}h ${totalHoursWorked % 60}m`,
+  avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
+  attendance: attendance.map((record) => ({
+    _id: record._id,
+    id: record.id,
+
+    date: record.createdAt.toLocaleDateString("en-IN"),
+
+    In_Time: record.In_Time,
+    delay_in_reason: record.delay_in_reason,
+    In_Time_reason: record.In_Time_reason,
+    In_time_outside: record.In_time_outside,
+    In_time_approved: record.In_time_approved,
+
+    Out_time: record.Out_time,
+    Out_time_reason: record.Out_time_reason,
+    Out_time_outside: record.Out_time_outside,
+    Out_time_approved: record.Out_time_approved,
+
+    Todays_Task: record.Todays_Task,
+    reason_for_task_delay: record.reason_for_task_delay,
+    remarks: record.remarks,
+
+    total_hours: record.total_hours,
+
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  }))
+});
 
   } catch (error) {
     console.error("getAttendance error:", error);
