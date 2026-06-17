@@ -428,44 +428,126 @@ router.get("/outsideRequest", rateLimiter, async (req, res) => {
     });
   }
 });
+// router.get("/get_emp_status", rateLimiter, async (req, res) => {
+
+//   console.log("came to get emp status");
+
+//   const { userId } = req.query;
+
+//   if (!userId) {
+//     return res.status(400).json({ message: "User ID is required" });
+//   }
+
+//   const startOfDay = new Date();
+//   startOfDay.setHours(0, 0, 0, 0);
+//   const endOfDay = new Date();
+//   endOfDay.setHours(23, 59, 59, 999);
+
+//   const check = await userDatamodel.findOne({
+//     id: userId,
+//     createdAt: {
+//       $gte: startOfDay,
+//       $lte: endOfDay,
+//     },
+//   });
+
+//   if (!check) {
+//     return res.status(202).json({ message: "Today you didn't provide attendance" });
+//   }
+
+//   if (!check.Out_time) {
+//     // FIXED: Added 'data: check' so the frontend can read the In_Time!
+//     return res.status(203).json({ 
+//       message: "Today you didn't provide out time",
+//       data: check 
+//     });
+//   }
+
+//   return res.status(200).json({
+//     success: true,
+//     data: check,
+//   });
+// });
 router.get("/get_emp_status", rateLimiter, async (req, res) => {
   console.log("came to get emp status");
 
   const { userId } = req.query;
 
   if (!userId) {
-    return res.status(400).json({ message: "User ID is required" });
+    return res.status(400).json({
+      success: false,
+      message: "User ID is required",
+    });
   }
 
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
+
   const endOfDay = new Date();
   endOfDay.setHours(23, 59, 59, 999);
 
-  const check = await userDatamodel.findOne({
-    id: userId,
-    createdAt: {
-      $gte: startOfDay,
-      $lte: endOfDay,
-    },
-  });
+  try {
+    const check = await userDatamodel.findOne({
+      id: userId,
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+    });
 
-  if (!check) {
-    return res.status(202).json({ message: "Today you didn't provide attendance" });
-  }
+    // No attendance at all
+    if (!check) {
+      return res.status(200).json({
+        success: true,
+        message: "Today attendance not taken",
+      });
+    }
 
-  if (!check.Out_time) {
-    // FIXED: Added 'data: check' so the frontend can read the In_Time!
-    return res.status(203).json({ 
-      message: "Today you didn't provide out time",
-      data: check 
+    // Attendance taken but approval pending
+    if (
+      (check.In_time_outside && !check.In_time_approved) ||
+      (check.Out_time_outside && !check.Out_time_approved)
+    ) {
+      return res.status(200).json({
+        success: true,
+        message: "Attendance is taken but not approved",
+        data: check,
+      });
+    }
+
+    // In-time taken, Out-time not taken
+    if (check.In_Time && !check.Out_time) {
+      return res.status(200).json({
+        success: true,
+        message: "In time is taken, out time is not taken",
+        data: check,
+      });
+    }
+
+    // Both taken
+    if (check.In_Time && check.Out_time) {
+      return res.status(200).json({
+        success: true,
+        message: "Today's attendance completed",
+        data: check,
+      });
+    }
+
+    // Fallback
+    return res.status(200).json({
+      success: true,
+      message: "Attendance status unavailable",
+      data: check,
+    });
+  } catch (error) {
+    console.error("get_emp_status error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
     });
   }
-
-  return res.status(200).json({
-    success: true,
-    data: check,
-  });
 });
 router.post("/addDepartment",rateLimiter,async(req,res)=>{
 try{
