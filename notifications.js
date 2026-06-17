@@ -104,33 +104,31 @@ router.get("/outsideApprovalStatus/:userId", async (req, res) => {
 
     if (!attendance) {
       return res.json({
+        success: true,
         inTime: null,
         outTime: null,
       });
     }
 
-    const notificationsRef = fire_db.ref("notifications");
-    const snap = await notificationsRef.once("value");
-
     let inNotificationExists = false;
     let outNotificationExists = false;
 
-    snap.forEach((headSnap) => {
-      headSnap.forEach((child) => {
-        const data = child.val();
+    const notificationsSnap = await fire_db.ref("notifications").once("value");
+
+    notificationsSnap.forEach((headSnap) => {
+      headSnap.forEach((childSnap) => {
+        const data = childSnap.val();
 
         if (
-          data.attendance_id === attendance._id.toString() &&
-          data.type === "In_Time"
+          data?.attendance_id?.toString() === attendance._id.toString()
         ) {
-          inNotificationExists = true;
-        }
+          if (data.type === "In_Time") {
+            inNotificationExists = true;
+          }
 
-        if (
-          data.attendance_id === attendance._id.toString() &&
-          data.type === "Out_time"
-        ) {
-          outNotificationExists = true;
+          if (data.type === "Out_time") {
+            outNotificationExists = true;
+          }
         }
       });
     });
@@ -138,25 +136,21 @@ router.get("/outsideApprovalStatus/:userId", async (req, res) => {
     let inTime = null;
     let outTime = null;
 
-    // In Time
+    // In Time status
     if (attendance.In_time_outside) {
       if (attendance.In_time_approved) {
         inTime = "approved";
-      } else if (inNotificationExists) {
-        inTime = "pending";
       } else {
-        inTime = "sendApproval";
+        inTime = inNotificationExists ? "pending" : "sendApproval";
       }
     }
 
-    // Out Time
+    // Out Time status
     if (attendance.Out_time_outside) {
       if (attendance.Out_time_approved) {
         outTime = "approved";
-      } else if (outNotificationExists) {
-        outTime = "pending";
       } else {
-        outTime = "sendApproval";
+        outTime = outNotificationExists ? "pending" : "sendApproval";
       }
     }
 
@@ -166,7 +160,8 @@ router.get("/outsideApprovalStatus/:userId", async (req, res) => {
       outTime,
     });
   } catch (err) {
-    console.log(err);
+    console.error("outsideApprovalStatus error:", err);
+
     return res.status(500).json({
       success: false,
       message: err.message,
