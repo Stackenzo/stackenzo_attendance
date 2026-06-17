@@ -248,7 +248,7 @@ console.log(todayRecord)
       return res.status(404).json({ message: "No head found for your department" });
     }
 
-    const notificationRef = fire_db.ref(`notifications/${head.id}`).push();
+    const notificationRef = fire_db.ref(`notifications/${head.headId}`).push();
     await notificationRef.set({
       from_user_id: userId.toString(),
       from_name: currentUser.Name,
