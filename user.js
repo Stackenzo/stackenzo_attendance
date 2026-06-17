@@ -1,5 +1,5 @@
 const {createJwt,veriftJWT}=require("./jwt")
-const {usermodel,userDatamodel, redis}=require("./db")
+const {usermodel,userDatamodel, redis, departments}=require("./db")
 const rateLimiter=require("./rateLimiter")
 const sendEmail=require("./email")
 const bcrypt =require("bcrypt")
@@ -113,6 +113,7 @@ router.post("/userLogin", rateLimiter, async (req, res) => {
       Name: user.Name,
       Role: user.Role,
       email: user.Email,
+      departments:user.Department,
       userType: "client",
     });
 console.log(token)
