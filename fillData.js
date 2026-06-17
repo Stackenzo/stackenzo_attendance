@@ -310,6 +310,12 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
     }
 
     const approvalField = type === "In_Time" ? "In_time_approved" : "Out_time_approved";
+    if (attendance[approvalField]) {
+  return res.status(400).json({
+    success: false,
+    message: `${type} has already been approved`,
+  });
+}
     const isApproved = action === "approve";
 
     const updated = await userDatamodel.findByIdAndUpdate(
