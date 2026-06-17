@@ -252,7 +252,7 @@ console.log(todayRecord)
     await notificationRef.set({
       from_user_id: userId.toString(),
       from_name: currentUser.Name,
-      to_user_id: head._id.toString(),
+      to_user_id: head.headId.toString(),
       department: currentUser.Department,
       type,           
       reason,
