@@ -153,7 +153,11 @@ router.get("/outsideApprovalStatus/:userId", async (req, res) => {
         outTime = outNotificationExists ? "pending" : "sendApproval";
       }
     }
-
+console.log({
+  attendanceId: attendance._id.toString(),
+  inNotificationExists,
+  outNotificationExists,
+});
     return res.json({
       success: true,
       inTime,
