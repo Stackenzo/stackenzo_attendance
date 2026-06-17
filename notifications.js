@@ -29,6 +29,7 @@ router.get("/getNotifications",rateLimiter,async(req,res)=>{
   try {
     console.log("came to notifications")
      const header = req.headers.authorization;
+     console.log(header)
     if (!header) {
       return res.status(401).json({ message: "Missing authorization headers" });
     }
