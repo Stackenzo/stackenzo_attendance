@@ -286,7 +286,7 @@ router.get("/getDepartments",rateLimiter,async(req,res)=>{
 })
 router.put("/approveOutside", rateLimiter, async (req, res) => {
   try {
-    const { attendanceId, employeeId, type, action, headId } = req.body;
+    const { attendanceId, employeeId, type, action, headId, NotificationId } = req.body;
  
     if (!attendanceId || !employeeId || !type || !action || !headId) {
       return res.status(400).json({ message: "attendanceId, employeeId, type, action and headId are required" });
@@ -344,7 +344,9 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
       is_read: false,
       timestamp: Date.now(),
     });
-
+if (NotificationId) {
+  await fire_db.ref(`notifications/${headId}/${NotificationId}`).remove();
+}
     return res.status(200).json({
       success: true,
       message: `${type} has been ${action}d successfully`,
