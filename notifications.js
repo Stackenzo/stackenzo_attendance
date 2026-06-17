@@ -84,5 +84,93 @@ router.get("/unreadCount", rateLimiter, async (req, res) => {
     });
   }
 });
+router.get("/outsideApprovalStatus/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
 
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const attendance = await userDatamodel.findOne({
+      id: userId,
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+    });
+
+    if (!attendance) {
+      return res.json({
+        inTime: null,
+        outTime: null,
+      });
+    }
+
+    const notificationsRef = fire_db.ref("notifications");
+    const snap = await notificationsRef.once("value");
+
+    let inNotificationExists = false;
+    let outNotificationExists = false;
+
+    snap.forEach((headSnap) => {
+      headSnap.forEach((child) => {
+        const data = child.val();
+
+        if (
+          data.attendance_id === attendance._id.toString() &&
+          data.type === "In_Time"
+        ) {
+          inNotificationExists = true;
+        }
+
+        if (
+          data.attendance_id === attendance._id.toString() &&
+          data.type === "Out_time"
+        ) {
+          outNotificationExists = true;
+        }
+      });
+    });
+
+    let inTime = null;
+    let outTime = null;
+
+    // In Time
+    if (attendance.In_time_outside) {
+      if (attendance.In_time_approved) {
+        inTime = "approved";
+      } else if (inNotificationExists) {
+        inTime = "pending";
+      } else {
+        inTime = "sendApproval";
+      }
+    }
+
+    // Out Time
+    if (attendance.Out_time_outside) {
+      if (attendance.Out_time_approved) {
+        outTime = "approved";
+      } else if (outNotificationExists) {
+        outTime = "pending";
+      } else {
+        outTime = "sendApproval";
+      }
+    }
+
+    return res.json({
+      success: true,
+      inTime,
+      outTime,
+    });
+  } catch (err) {
+    console.log(err);
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+});
 module.exports=router
