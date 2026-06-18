@@ -58,7 +58,7 @@ const users_data = new mongoose.Schema(
   {
     id: {
       type: mongoose.Schema.ObjectId,
-      ref: "usermodel",
+      ref: "user",
     },
     In_Time: {
       type: String,

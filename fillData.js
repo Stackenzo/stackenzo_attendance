@@ -674,4 +674,125 @@ router.post("/getAttendance", rateLimiter, async (req, res) => {
     });
   }
 });
+router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
+  try {
+    const { filter } = req.body;
+
+    let dateFilter = {};
+    if (filter === "today") {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+      dateFilter = { createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    } else if (filter === "week") {
+      const startOfWeek = new Date();
+      startOfWeek.setDate(startOfWeek.getDate() - 7);
+      startOfWeek.setHours(0, 0, 0, 0);
+      dateFilter = { createdAt: { $gte: startOfWeek } };
+    } else if (filter === "month") {
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+      dateFilter = { createdAt: { $gte: startOfMonth } };
+    }
+
+    // Populate user info from the id field
+    const attendance = await userDatamodel
+      .find({ ...dateFilter })
+      .populate("id", "Name Email mobile_no Role Department EmpId") // 👈 select only needed fields, excludes password
+      .sort({ createdAt: -1 });
+
+    if (!attendance || attendance.length === 0) {
+      return res.status(404).json({ message: "No attendance records found" });
+    }
+
+    const parseMinutes = (total_hours) => {
+      if (!total_hours) return 0;
+      const match = total_hours.match(/(\d+)h\s(\d+)m/);
+      if (!match) return 0;
+      return parseInt(match[1]) * 60 + parseInt(match[2]);
+    };
+
+    // Group by member id
+    const memberMap = {};
+    for (const record of attendance) {
+      const memberId = record.id?._id?.toString();
+      if (!memberId) continue;
+
+      if (!memberMap[memberId]) {
+        memberMap[memberId] = {
+          member_info: {
+            _id: record.id._id,
+            Name: record.id.Name,
+            Email: record.id.Email,
+            mobile_no: record.id.mobile_no,
+            Role: record.id.Role,
+            Department: record.id.Department,
+            EmpId: record.id.EmpId,
+          },
+          records: [],
+          totalMinutes: 0,
+        };
+      }
+
+      memberMap[memberId].records.push(record);
+      memberMap[memberId].totalMinutes += parseMinutes(record.total_hours);
+    }
+
+    // Build per-member summary
+    const members = Object.entries(memberMap).map(([memberId, { member_info, records, totalMinutes }]) => {
+      const totalDays = records.length;
+      const avgMinutesPerDay = totalDays > 0 ? Math.round(totalMinutes / totalDays) : 0;
+
+      return {
+        member_id: memberId,
+        member_info,  // 👈 full user profile here
+        total_days: totalDays,
+        total_hours: `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`,
+        avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
+        attendance: records.map((record) => ({
+          _id: record._id,
+          date: record.createdAt.toLocaleDateString("en-IN"),
+          In_Time: record.In_Time,
+          delay_in_reason: record.delay_in_reason,
+          In_Time_reason: record.In_Time_reason,
+          In_time_outside: record.In_time_outside,
+          In_time_approved: record.In_time_approved,
+          Out_time: record.Out_time,
+          Out_time_reason: record.Out_time_reason,
+          Out_time_outside: record.Out_time_outside,
+          Out_time_approved: record.Out_time_approved,
+          Todays_Task: record.Todays_Task,
+          reason_for_task_delay: record.reason_for_task_delay,
+          remarks: record.remarks,
+          total_hours: record.total_hours,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        })),
+      };
+    });
+
+    const overallTotalMinutes = attendance.reduce(
+      (acc, record) => acc + parseMinutes(record.total_hours),
+      0
+    );
+
+    return res.status(200).json({
+      success: true,
+      total_members: members.length,
+      total_records: attendance.length,
+      overall_total_hours: `${Math.floor(overallTotalMinutes / 60)}h ${overallTotalMinutes % 60}m`,
+      members,
+    });
+
+  } catch (error) {
+    console.error("getAttendanceAdmin error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
 module.exports = router;
