@@ -286,8 +286,9 @@ router.get("/getDepartments",rateLimiter,async(req,res)=>{
 })
 router.put("/approveOutside", rateLimiter, async (req, res) => {
   try {
+
     const { attendanceId, employeeId, type, action, headId, NotificationId } = req.body;
- 
+ console.log(attendanceId)
     if (!attendanceId || !employeeId || !type || !action || !headId) {
       return res.status(400).json({ message: "attendanceId, employeeId, type, action and headId are required" });
     }
@@ -321,7 +322,7 @@ router.put("/approveOutside", rateLimiter, async (req, res) => {
     const updated = await userDatamodel.findByIdAndUpdate(
       attendanceId,
       { [approvalField]: isApproved },
-      { new: true }
+    { returnDocument: "after" }
     );
 
  
@@ -676,8 +677,9 @@ router.post("/getAttendance", rateLimiter, async (req, res) => {
 });
 router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
   try {
+    
     const { filter } = req.body;
-
+console.log(filter)
     let dateFilter = {};
     if (filter === "today") {
       const startOfDay = new Date();
@@ -777,7 +779,7 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
       (acc, record) => acc + parseMinutes(record.total_hours),
       0
     );
-
+//console.log(members)
     return res.status(200).json({
       success: true,
       total_members: members.length,
