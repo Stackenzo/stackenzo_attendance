@@ -42,9 +42,16 @@ let lat=14.435987
 
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
-
+const findUser=await usermodel.findOne({
+  id_alias:userId,
+  
+})
+if(!findUser){
+    console.log("user not found",findUser)
+    return res.status(401).json({message:"user not found"})
+}
     const existingAttendance = await userDatamodel.findOne({
-      id: userId,
+      id:findUser._id,
       createdAt: {
         $gte: startOfDay,
         $lte: endOfDay,
@@ -59,7 +66,7 @@ console.log(existingAttendance)
       });
     }
     const attendance = await userDatamodel.create({
-      id: userId,
+      id: findUser._id,
       In_Time: time,
       In_time_outside: false,
       CCTV_in:true
@@ -95,8 +102,16 @@ let lat=14.435987
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
+    const findUser=await usermodel.findOne({
+  id_alias:userId,
+  
+})
+if(!findUser){
+    console.log("user not found",findUser)
+    return res.status(401).json({message:"user not found"})
+}
     const todayRecord = await userDatamodel.findOne({
-      id: userId,
+      id: findUser._id,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
 
@@ -129,9 +144,9 @@ let lat=14.435987
     const inMinutes = parseTimeToMinutes(todayRecord.In_Time);
     const outMinutes = parseTimeToMinutes(time);
 
-    console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
-    console.log("Out_Time raw:", JSON.stringify(time));
-    console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
+    // console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
+    // console.log("Out_Time raw:", JSON.stringify(time));
+    // console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
 
     if (inMinutes === null || outMinutes === null) {
       return res.status(400).json({ message: "Invalid time format. Expected format: '6:11 PM'" });
