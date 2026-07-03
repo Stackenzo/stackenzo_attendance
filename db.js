@@ -75,6 +75,14 @@ type: String,
       trim: true,
       default: "",
     },
+    CCTV_in:{
+      type:Boolean,
+      default:false
+    },
+    CCTV_out:{
+      type:Boolean,
+      default:false
+    },
     In_time_outside: {
       type: Boolean,
       required: true,

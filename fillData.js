@@ -26,6 +26,154 @@ function getDistanceInMeters(lat1, lng1, lat2, lng2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
+router.post("/in-timeCCTV", rateLimiter, async (req, res) => {
+  try {
+    const { time,userId } = req.body;
+let lat=14.435987
+ let lng=79.991139 
+    if ( !time) {
+      return res.status(400).json({
+        success: false,
+        message: "lat, lng, and time are required",
+      });
+    }
+  const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingAttendance = await userDatamodel.findOne({
+      id: userId,
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+      In_Time: { $ne: "" }
+    });
+console.log(existingAttendance)
+    if (existingAttendance) {
+      return res.status(400).json({
+        success: false,
+        message: "Attendance already marked for today",
+      });
+    }
+    const attendance = await userDatamodel.create({
+      id: userId,
+      In_Time: time,
+      In_time_outside: false,
+      CCTV_in:true
+    
+    });
+    return res.status(201).json({
+      success: true,
+      message: "Attendance marked successfully",
+      
+      attendance,
+    });
+
+  } catch (error) {
+    console.error("In-Time error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+router.post("/out-timeCCTV", rateLimiter, async (req, res) => {
+  try {
+    const { time, userId } = req.body;
+
+    if (!time || !userId) {
+      return res.status(400).json({ message: "lat, lng, time, task and userId are required" });
+    }
+let lat=14.435987
+ let lng=79.991139 
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const todayRecord = await userDatamodel.findOne({
+      id: userId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    });
+
+    if (!todayRecord || !todayRecord.In_Time) {
+      return res.status(400).json({ message: "In time is not recorded for today" });
+    }
+
+    if (todayRecord.Out_time) {
+      return res.status(400).json({ message: "Out time already marked for today" });
+    }
+    // ✅ Robust time parser — handles "6:11 PM", "06:11 PM", "12:00 AM", "12:00 PM"
+    const parseTimeToMinutes = (timeStr) => {
+      const cleaned = timeStr.trim().replace(/\s+/g, " "); // remove extra spaces
+      const match = cleaned.match(/^(\d{1,2}):(\d{2})\s?(AM|PM)$/i);
+      if (!match) {
+        console.error("Invalid time format:", JSON.stringify(timeStr));
+        return null;
+      }
+
+      let hours = parseInt(match[1], 10);
+      let minutes = parseInt(match[2], 10);
+      const modifier = match[3].toUpperCase();
+
+      if (modifier === "PM" && hours !== 12) hours += 12;
+      if (modifier === "AM" && hours === 12) hours = 0;
+
+      return hours * 60 + minutes;
+    };
+
+    const inMinutes = parseTimeToMinutes(todayRecord.In_Time);
+    const outMinutes = parseTimeToMinutes(time);
+
+    console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
+    console.log("Out_Time raw:", JSON.stringify(time));
+    console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
+
+    if (inMinutes === null || outMinutes === null) {
+      return res.status(400).json({ message: "Invalid time format. Expected format: '6:11 PM'" });
+    }
+
+    if (outMinutes <= inMinutes) {
+      return res.status(400).json({ message: "Out time must be after In time" });
+    }
+
+    const totalMinutes = outMinutes - inMinutes;
+    const hoursWorked = Math.floor(totalMinutes / 60);
+    const minutesWorked = totalMinutes % 60;
+    const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
+
+    console.log("totalHoursStr:", totalHoursStr);
+
+    const updated = await userDatamodel.findByIdAndUpdate(
+      todayRecord._id,
+      {
+        Out_time: time.trim(),
+        Out_time_outside: false,
+         CCTV_out:true,
+        total_hours: totalHoursStr,
+      },
+      { returnDocument: "after" }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message:  "Out time marked successfully",
+      attendance: updated,
+    });
+
+  } catch (error) {
+    console.error("Out-Time error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
 router.post("/in-time", rateLimiter, async (req, res) => {
   try {
     const { lat, lng, time,userId,delay_in_reason } = req.body;
