@@ -29,6 +29,8 @@ function getDistanceInMeters(lat1, lng1, lat2, lng2) {
 router.post("/in-timeCCTV", rateLimiter, async (req, res) => {
   try {
     const { time,userId } = req.body;
+    console.log(time)
+    console.log(userId)
 let lat=14.435987
  let lng=79.991139 
     if ( !time) {
@@ -91,7 +93,8 @@ console.log(existingAttendance)
 router.post("/out-timeCCTV", rateLimiter, async (req, res) => {
   try {
     const { time, userId } = req.body;
-
+console.log(time)
+console.log(userId)
     if (!time || !userId) {
       return res.status(400).json({ message: "lat, lng, time, task and userId are required" });
     }
