@@ -60,7 +60,7 @@ if(!findUser){
       },
       In_Time: { $ne: "" }
     });
-console.log(existingAttendance)
+console.log("exiting",existingAttendance)
     if (existingAttendance) {
       return res.status(400).json({
         success: false,
@@ -74,10 +74,10 @@ console.log(existingAttendance)
       CCTV_in:true
     
     });
+    console.log(attendance)
     return res.status(201).json({
       success: true,
       message: "Attendance marked successfully",
-      
       attendance,
     });
 
