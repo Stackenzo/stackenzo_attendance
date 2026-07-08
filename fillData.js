@@ -4,6 +4,7 @@ const router = express.Router();
 const {createJwt,veriftJWT}=require("./jwt")
 const {usermodel,userDatamodel,departments,fire_db, }=require("./db");
 const rateLimiter = require("./rateLimiter");
+const { messaging } = require("firebase-admin");
 
 const OFFICE_LAT = 14.435987;   
 const OFFICE_LNG = 79.991139;
@@ -190,6 +191,102 @@ if(!findUser){
       message: "Server error",
       error: error.message,
     });
+  }
+});
+router.post("/empL1", rateLimiter, async (req, res) => {
+  const { time, userId } = req.body;
+
+  let userids = Array.isArray(userId) ? userId : [userId];
+const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+  if (!userids.length || userids.some(id => !id)) {
+    ContentSteeringController.log("user id didn't come");
+    return res.status(400).json({ message: "not found user id" });
+  }
+
+  userids = [...new Set(userids)];
+
+  try {
+   
+    const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
+
+    const existingAliases = existingUsers.map(u => u.id_alias);
+    const missingIds = userids.filter(id => !existingAliases.includes(id));
+
+    if (missingIds.length) {
+      return res.status(404).json({
+        message: "Some user IDs do not exist",
+        missingIds
+      });
+    }
+
+    const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
+
+    const updateResult = await users_data.updateMany(
+      { id: { $in: mongoIds } },
+      { $set: { l1: true, l1Time:time.trim() } }
+    );
+
+    res.json({
+      time,
+      matched: updateResult.matchedCount,
+      modified: updateResult.modifiedCount
+    });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Error verifying user ids" });
+  }
+});
+router.post("/empL2", rateLimiter, async (req, res) => {
+  const { time, userId } = req.body;
+
+  let userids = Array.isArray(userId) ? userId : [userId];
+const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+  if (!userids.length || userids.some(id => !id)) {
+    ContentSteeringController.log("user id didn't come");
+    return res.status(400).json({ message: "not found user id" });
+  }
+
+  userids = [...new Set(userids)];
+
+  try {
+   
+    const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
+
+    const existingAliases = existingUsers.map(u => u.id_alias);
+    const missingIds = userids.filter(id => !existingAliases.includes(id));
+
+    if (missingIds.length) {
+      return res.status(404).json({
+        message: "Some user IDs do not exist",
+        missingIds
+      });
+    }
+
+    const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
+
+    const updateResult = await users_data.updateMany(
+      { id: { $in: mongoIds } },
+      { $set: { l2: true, l2Time:time.trim() } }
+    );
+
+    res.json({
+      time,
+      matched: updateResult.matchedCount,
+      modified: updateResult.modifiedCount
+    });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Error verifying user ids" });
   }
 });
 router.post("/in-time", rateLimiter, async (req, res) => {

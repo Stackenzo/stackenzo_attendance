@@ -87,9 +87,20 @@ type: String,
 type:Boolean,
 default:false
     },
+    l1Time:{
+type: String,
+      trim: true,
+      default: "",
+    },
+
     l2:{
 type:Boolean,
 default:false
+    },
+    l2Time:{
+      type: String,
+      trim: true,
+      default: "",
     },
     In_time_outside: {
       type: Boolean,
