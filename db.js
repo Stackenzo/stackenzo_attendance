@@ -83,6 +83,14 @@ type: String,
       type:Boolean,
       default:false
     },
+    l1:{
+type:Boolean,
+default:false
+    },
+    l2:{
+type:Boolean,
+default:false
+    },
     In_time_outside: {
       type: Boolean,
       required: true,
