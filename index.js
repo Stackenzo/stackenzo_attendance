@@ -1,8 +1,9 @@
 const express= require("express")
 const cors = require("cors");
-const { connectdb } = require("./db");
+const {pool,connectDB} = require("./DB/psql")
 const user=require("./user")
 const fillData=require("./fillData")
+const {redis,connectRedis}=require("./DB/redis")
 const notification=require("./notifications")
 try{
     const env=require("dotenv").config()
@@ -14,7 +15,8 @@ try{
 const port=3002
 const app= express()
 app.use(express.json()); 
-connectdb()
+connectDB()
+connectRedis()
 app.use(cors());
 
 app.get("/",(req,res)=>{

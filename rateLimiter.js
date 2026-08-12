@@ -1,4 +1,4 @@
-const {redis}=require("./db")
+const {redis}=require("./DB/redis")
 async function rateLimiter(req,res,next) {
     const key=`rate:${req.ip}`
             const request=await redis.get(key)

@@ -3,12 +3,30 @@ const router = express.Router();
 
 const {createJwt,veriftJWT}=require("./jwt")
 const {usermodel,userDatamodel,departments,fire_db, }=require("./db");
+const {redis}=require("./DB/redis")
+const {pool}=require("./DB/psql")
 const rateLimiter = require("./rateLimiter");
 const { messaging } = require("firebase-admin");
 
 const OFFICE_LAT = 14.435987;   
 const OFFICE_LNG = 79.991139;
 const ALLOWED_RADIUS_METERS = 200; 
+async function checkLate(time) {
+const checkInTime = new Date(time);
+
+const hours = checkInTime.getHours();
+const minutes = checkInTime.getMinutes();
+
+const totalMinutes = hours * 60 + minutes;
+
+const lateLimit = 10 * 60 + 30; 
+
+if(totalMinutes > lateLimit){
+    return true
+} 
+   
+return false
+}
 
 function getDistanceInMeters(lat1, lng1, lat2, lng2) {
   const R = 6371000; 
@@ -28,678 +46,2460 @@ function getDistanceInMeters(lat1, lng1, lat2, lng2) {
   return R * c;
 }
 router.post("/in-timeCCTV", rateLimiter, async (req, res) => {
-  try {
-    const { time,userId } = req.body;
-    console.log(time)
-    console.log(userId)
-let lat=14.435987
- let lng=79.991139 
-    if ( !time) {
-      return res.status(400).json({
-        success: false,
-        message: "lat, lng, and time are required",
-      });
-    }
-  const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    try {
+        const { time, userId } = req.body;
 
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-const findUser=await usermodel.findOne({
-  id_alias:userId,
-  
-})
-if(!findUser){
-    console.log("user not found",findUser)
-    return res.status(401).json({message:"user not found"})
-}
-    const existingAttendance = await userDatamodel.findOne({
-      id:findUser._id,
-      createdAt: {
-        $gte: startOfDay,
-        $lte: endOfDay,
-      },
-      In_Time: { $ne: "" }
-    });
-console.log("exiting",existingAttendance)
-    if (existingAttendance) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already marked for today",
-      });
-    }
-    const attendance = await userDatamodel.create({
-      id: findUser._id,
-      In_Time: time,
-      In_time_outside: false,
-      CCTV_in:true
-    
-    });
-    console.log(attendance)
-    return res.status(201).json({
-      success: true,
-      message: "Attendance marked successfully",
-      attendance,
-    });
+        console.log("time:", time);
+        console.log("userId:", userId);
 
-  } catch (error) {
-    console.error("In-Time error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
+        // Temporary CCTV location
+        const lat = 14.435987;
+        const lng = 79.991139;
+
+        if (!time || !userId) {
+            return res.status(400).json({
+                success: false,
+                message: "userId and time are required"
+            });
+        }
+
+        // Find member
+        const memberResult = await pool.query(
+            `
+            SELECT
+                id,
+                name,
+                emp_id
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const member = memberResult.rows[0];
+
+        if (!member) {
+            console.log("User not found:", userId);
+
+            return res.status(401).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        // Check today's attendance
+        const existingAttendance = await pool.query(
+            `
+            SELECT *
+            FROM members_daily_data
+            WHERE member_id = $1
+              AND attendance_date = CURRENT_DATE
+            LIMIT 1
+            `,
+            [member.id]
+        );
+
+        if (existingAttendance.rows.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance already marked for today"
+            });
+        }
+
+        // Create attendance
+        const attendanceResult = await pool.query(
+            `
+            INSERT INTO members_daily_data (
+                member_id,
+                attendance_date,
+                in_time,
+                in_time_outside,
+                in_time_outside_approved,
+                in_time_late,
+                out_time_outside,
+                out_time_outside_approved,
+                out_time_permission,
+                out_time_permission_approved,
+                in_latitude,
+                in_longitude,
+                cctv_in
+               
+            )
+            VALUES (
+                $1,
+                CURRENT_DATE,
+                $2,
+                FALSE,
+                FALSE,
+                FALSE,
+                FALSE,
+                FALSE,
+                FALSE,
+                FALSE,
+                $3,
+                $4,
+                TRUE
+            )
+            RETURNING *
+            `,
+            [
+                member.id,
+                time,
+                lat,
+                lng
+            ]
+        );
+
+        const attendance = attendanceResult.rows[0];
+
+
+        return res.status(201).json({
+            success: true,
+            message: "Attendance marked successfully",
+            attendance
+        });
+
+    } catch (error) {
+
+        console.error("In-Time error:", error);
+
+        // PostgreSQL unique constraint
+        if (error.code === "23505") {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance already marked for today"
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
 });
 router.post("/out-timeCCTV", rateLimiter, async (req, res) => {
-  try {
-    const { time, userId } = req.body;
-console.log(time)
-console.log(userId)
-    if (!time || !userId) {
-      return res.status(400).json({ message: "lat, lng, time, task and userId are required" });
+    try {
+        const { time, userId } = req.body;
+
+        console.log("time:", time);
+        console.log("userId:", userId);
+
+        if (!time || !userId) {
+            return res.status(400).json({
+                success: false,
+                message: "time and userId are required"
+            });
+        }
+
+        // Temporary CCTV location
+        const lat = 14.435987;
+        const lng = 79.991139;
+
+        // Find member
+        const memberResult = await pool.query(
+            `
+            SELECT id, name, emp_id
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const member = memberResult.rows[0];
+
+        if (!member) {
+            console.log("User not found:", userId);
+
+            return res.status(401).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        // Get today's attendance
+        const attendanceResult = await pool.query(
+            `
+            SELECT *
+            FROM members_daily_data
+            WHERE member_id = $1
+              AND attendance_date = CURRENT_DATE
+            LIMIT 1
+            `,
+            [member.id]
+        );
+
+        const todayRecord = attendanceResult.rows[0];
+
+        if (!todayRecord || !todayRecord.in_time) {
+            return res.status(400).json({
+                success: false,
+                message: "In time is not recorded for today"
+            });
+        }
+
+        if (todayRecord.out_time) {
+            return res.status(400).json({
+                success: false,
+                message: "Out time already marked for today"
+            });
+        }
+
+      
+        const parseTimeToMinutes = (timeStr) => {
+            const cleaned = timeStr
+                .trim()
+                .replace(/\s+/g, " ");
+
+            const match = cleaned.match(
+                /^(\d{1,2}):(\d{2})\s?(AM|PM)$/i
+            );
+
+            if (!match) {
+                console.error(
+                    "Invalid time format:",
+                    JSON.stringify(timeStr)
+                );
+
+                return null;
+            }
+
+            let hours = parseInt(match[1], 10);
+            const minutes = parseInt(match[2], 10);
+            const modifier = match[3].toUpperCase();
+
+            if (hours < 1 || hours > 12 || minutes > 59) {
+                return null;
+            }
+
+            if (modifier === "PM" && hours !== 12) {
+                hours += 12;
+            }
+
+            if (modifier === "AM" && hours === 12) {
+                hours = 0;
+            }
+
+            return hours * 60 + minutes;
+        };
+
+        const outMinutes = parseTimeToMinutes(time);
+
+        if (outMinutes === null) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Invalid time format. Expected format: '6:11 PM'"
+            });
+        }
+
+        /*
+         * Compare with PostgreSQL's stored IN time.
+         */
+        const inTime = new Date(todayRecord.in_time);
+
+        const inMinutes =
+            inTime.getHours() * 60 +
+            inTime.getMinutes();
+
+        if (outMinutes <= inMinutes) {
+            return res.status(400).json({
+                success: false,
+                message: "Out time must be after In time"
+            });
+        }
+
+        /*
+         * Calculate total worked minutes.
+         */
+        const totalMinutes = outMinutes - inMinutes;
+
+        const hoursWorked = Math.floor(totalMinutes / 60);
+        const minutesWorked = totalMinutes % 60;
+
+        const totalHoursStr =
+            `${hoursWorked}h ${minutesWorked}m`;
+
+        console.log("Total hours:", totalHoursStr);
+
+        /*
+         * Create today's OUT timestamp.
+         *
+         * Use today's date + received time.
+         */
+        const today = new Date();
+
+        const outDate = new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate(),
+            Math.floor(outMinutes / 60),
+            outMinutes % 60,
+            0,
+            0
+        );
+
+        /*
+         * Update attendance.
+         */
+        const updateResult = await pool.query(
+            `
+            UPDATE members_daily_data
+            SET
+                out_time = $1,
+                out_time_outside = FALSE,
+                cctv_out = TRUE,
+
+                out_latitude = $2,
+                out_longitude = $3,
+
+                total_hours_worked =
+                    ($1::timestamptz - in_time),
+
+                updated_at = NOW()
+
+            WHERE id = $4
+
+            RETURNING *
+            `,
+            [
+                outDate,
+                lat,
+                lng,
+                todayRecord.id
+            ]
+        );
+
+        const updated = updateResult.rows[0];
+
+        return res.status(200).json({
+            success: true,
+            message: "Out time marked successfully",
+            attendance: updated
+        });
+
+    } catch (error) {
+
+        console.error("Out-Time error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
     }
-let lat=14.435987
- let lng=79.991139 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const findUser=await usermodel.findOne({
-  id_alias:userId,
-  
-})
-if(!findUser){
-    console.log("user not found",findUser)
-    return res.status(401).json({message:"user not found"})
-}
-    const todayRecord = await userDatamodel.findOne({
-      id: findUser._id,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    });
-
-    if (!todayRecord || !todayRecord.In_Time) {
-      return res.status(400).json({ message: "In time is not recorded for today" });
-    }
-
-    if (todayRecord.Out_time) {
-      return res.status(400).json({ message: "Out time already marked for today" });
-    }
-    // ✅ Robust time parser — handles "6:11 PM", "06:11 PM", "12:00 AM", "12:00 PM"
-    const parseTimeToMinutes = (timeStr) => {
-      const cleaned = timeStr.trim().replace(/\s+/g, " "); // remove extra spaces
-      const match = cleaned.match(/^(\d{1,2}):(\d{2})\s?(AM|PM)$/i);
-      if (!match) {
-        console.error("Invalid time format:", JSON.stringify(timeStr));
-        return null;
-      }
-
-      let hours = parseInt(match[1], 10);
-      let minutes = parseInt(match[2], 10);
-      const modifier = match[3].toUpperCase();
-
-      if (modifier === "PM" && hours !== 12) hours += 12;
-      if (modifier === "AM" && hours === 12) hours = 0;
-
-      return hours * 60 + minutes;
-    };
-
-    const inMinutes = parseTimeToMinutes(todayRecord.In_Time);
-    const outMinutes = parseTimeToMinutes(time);
-
-    // console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
-    // console.log("Out_Time raw:", JSON.stringify(time));
-    // console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
-
-    if (inMinutes === null || outMinutes === null) {
-      return res.status(400).json({ message: "Invalid time format. Expected format: '6:11 PM'" });
-    }
-
-    if (outMinutes <= inMinutes) {
-      return res.status(400).json({ message: "Out time must be after In time" });
-    }
-
-    const totalMinutes = outMinutes - inMinutes;
-    const hoursWorked = Math.floor(totalMinutes / 60);
-    const minutesWorked = totalMinutes % 60;
-    const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
-
-    console.log("totalHoursStr:", totalHoursStr);
-
-    const updated = await userDatamodel.findByIdAndUpdate(
-      todayRecord._id,
-      {
-        Out_time: time.trim(),
-        Out_time_outside: false,
-         CCTV_out:true,
-        total_hours: totalHoursStr,
-      },
-      { returnDocument: "after" }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message:  "Out time marked successfully",
-      attendance: updated,
-    });
-
-  } catch (error) {
-    console.error("Out-Time error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-});
-router.post("/empL1", rateLimiter, async (req, res) => {
-  const { time, userId } = req.body;
-
-  let userids = Array.isArray(userId) ? userId : [userId];
-const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-  if (!userids.length || userids.some(id => !id)) {
-    ContentSteeringController.log("user id didn't come");
-    return res.status(400).json({ message: "not found user id" });
-  }
-
-  userids = [...new Set(userids)];
-
-  try {
-   
-    const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
-
-    const existingAliases = existingUsers.map(u => u.id_alias);
-    const missingIds = userids.filter(id => !existingAliases.includes(id));
-
-    if (missingIds.length) {
-      return res.status(404).json({
-        message: "Some user IDs do not exist",
-        missingIds
-      });
-    }
-
-    const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
-
-    const updateResult = await users_data.updateMany(
-      { id: { $in: mongoIds } },
-      { $set: { l1: true, l1Time:time.trim() } }
-    );
-
-    res.json({
-      time,
-      matched: updateResult.matchedCount,
-      modified: updateResult.modifiedCount
-    });
-
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error verifying user ids" });
-  }
-});
-router.post("/empL2", rateLimiter, async (req, res) => {
-  const { time, userId } = req.body;
-
-  let userids = Array.isArray(userId) ? userId : [userId];
-const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-  if (!userids.length || userids.some(id => !id)) {
-    ContentSteeringController.log("user id didn't come");
-    return res.status(400).json({ message: "not found user id" });
-  }
-
-  userids = [...new Set(userids)];
-
-  try {
-   
-    const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
-
-    const existingAliases = existingUsers.map(u => u.id_alias);
-    const missingIds = userids.filter(id => !existingAliases.includes(id));
-
-    if (missingIds.length) {
-      return res.status(404).json({
-        message: "Some user IDs do not exist",
-        missingIds
-      });
-    }
-
-    const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
-
-    const updateResult = await users_data.updateMany(
-      { id: { $in: mongoIds } },
-      { $set: { l2: true, l2Time:time.trim() } }
-    );
-
-    res.json({
-      time,
-      matched: updateResult.matchedCount,
-      modified: updateResult.modifiedCount
-    });
-
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error verifying user ids" });
-  }
 });
 router.post("/in-time", rateLimiter, async (req, res) => {
-  try {
-    const { lat, lng, time,userId,delay_in_reason } = req.body;
+    try {
+        const {
+            lat,
+            lng,
+            time,
+            userId,
+            delay_in_reason,
+           
+        } = req.body;
 
-    if (!lat || !lng || !time) {
-      return res.status(400).json({
-        success: false,
-        message: "lat, lng, and time are required",
-      });
+        if (!lat || !lng || !userId||!time) {
+            return res.status(400).json({
+                success: false,
+                message: "lat, lng, and userId are required"
+            });
+        }
+
+        const memberResult = await pool.query(
+            `
+            SELECT
+                id,
+                name,
+                emp_id
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const member = memberResult.rows[0];
+
+        if (!member) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        /*
+         * Check today's attendance
+         */
+        const existingAttendance = await pool.query(
+            `
+            SELECT *
+            FROM members_daily_data
+            WHERE member_id = $1
+              AND attendance_date = CURRENT_DATE
+            LIMIT 1
+            `,
+            [member.id]
+        );
+
+        if (existingAttendance.rows.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance already marked for today"
+            });
+        }
+
+        /*
+         * Calculate distance from office
+         */
+        const distance = getDistanceInMeters(
+            parseFloat(lat),
+            parseFloat(lng),
+            OFFICE_LAT,
+            OFFICE_LNG
+        );
+
+        const isOutside =
+            distance > ALLOWED_RADIUS_METERS;
+const isLate=await checkLate(time)
+if(isLate){
+    if(!delay_in_reason){
+       
+        return res.status(400).json({message:"you are late to office please enter the delay reason to continue"})
     }
-  const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    
+}
+        /*
+         * Create attendance
+         */
+       const attendanceResult = await pool.query(
+    `
+    INSERT INTO members_daily_data (
+        member_id,
+        attendance_date,
+        in_time,
+        in_time_outside,
+        in_time_outside_approved,
+        in_time_outside_reason,
+        in_time_late,
+        in_time_late_reason,
+        in_latitude,
+        in_longitude,
+       
+        cctv_in
+    )
+    VALUES (
+        $1,
+        $2::timestamp,
+        $2::timestamp,
+        $3,
+        FALSE,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        
+        FALSE
+    )
+    RETURNING *
+    `,
+    [
+        member.id,
+        time,
+        isOutside,
+        isOutside ? "Outside office premises" : null,
+        isLate?true:false,
+        delay_in_reason || null,
+        parseFloat(lat),
+        parseFloat(lng),
+      
+    ]
+);
 
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+        const attendance = attendanceResult.rows[0];
 
-    const existingAttendance = await userDatamodel.findOne({
-      id: userId,
-      createdAt: {
-        $gte: startOfDay,
-        $lte: endOfDay,
-      },
-      In_Time: { $ne: "" }
-    });
+       
 
-    if (existingAttendance) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already marked for today",
-      });
+        return res.status(201).json({
+            success: true,
+
+            message: isOutside
+                ? "Attendance marked — but you are outside office premises. Send approval to your Head"
+                : "Attendance marked successfully",
+              
+
+            isOutside,
+
+            distance_meters: Math.round(distance),
+
+            attendance
+        });
+
+    } catch (error) {
+
+        console.error("In-Time error:", error);
+
+        /*
+         * PostgreSQL unique constraint:
+         * one attendance per member per day
+         */
+        if (error.code === "23505") {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance already marked for today"
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
     }
-
-    const distance = getDistanceInMeters(
-      parseFloat(lat),
-      parseFloat(lng),
-      OFFICE_LAT,
-      OFFICE_LNG
-    );
-
-    const isOutside = distance > ALLOWED_RADIUS_METERS;
-    const attendance = await userDatamodel.create({
-      id: userId,
-      In_Time: time,
-      In_time_outside: isOutside,
-      delay_in_reason:delay_in_reason
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: isOutside
-        ? "Attendance marked — but you are outside office premises.send approval to your Head"
-        : "Attendance marked successfully",
-      isOutside,
-      distance_meters: Math.round(distance),
-      attendance,
-    });
-
-  } catch (error) {
-    console.error("In-Time error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
 });
 router.post("/out-time", rateLimiter, async (req, res) => {
-  try {
-    const { lat, lng, time, task, T_reason, remarks, userId } = req.body;
+    try {
 
-    if (!lat || !lng || !time || !task || !userId) {
-      return res.status(400).json({ message: "lat, lng, time, task and userId are required" });
-    }
+        const {
+            lat,
+            lng,
+            time,
+            task,
+            T_reason,
+            remarks,
+            userId,
+            early_going_reason
+        } = req.body;
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+        if (!lat || !lng || !userId || !time||!task) {
+            return res.status(400).json({
+                success: false,
+                message: "lat, lng, time and userId are required"
+            });
+        }
 
-    const todayRecord = await userDatamodel.findOne({
-      id: userId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
+        // Find member
+        const memberResult = await pool.query(
+            `
+            SELECT id, name, emp_id
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const member = memberResult.rows[0];
+
+        if (!member) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        // Get today's attendance
+        const attendanceResult = await pool.query(
+            `
+            SELECT *
+            FROM members_daily_data
+            WHERE member_id = $1
+              AND attendance_date = CURRENT_DATE
+            LIMIT 1
+            `,
+            [member.id]
+        );
+
+        const todayRecord = attendanceResult.rows[0];
+
+        if (!todayRecord || !todayRecord.in_time) {
+            return res.status(400).json({
+                success: false,
+                message: "In time is not recorded for today"
+            });
+        }
+
+        if (todayRecord.out_time) {
+            return res.status(400).json({
+                success: false,
+                message: "Out time already marked for today"
+            });
+        }
+
+        /*
+         * Calculate working hours
+         * using frontend time and stored in_time
+         */
+      const inTime = new Date(todayRecord.in_time);
+const outTime = new Date(time);
+
+const differenceMs = outTime - inTime;
+
+const totalHours = differenceMs / (1000 * 60 * 60);
+
+if (totalHours < 0) {
+    return res.status(400).json({
+        success: false,
+        message: "Out time cannot be before in time"
     });
+}
 
-    if (!todayRecord || !todayRecord.In_Time) {
-      return res.status(400).json({ message: "In time is not recorded for today" });
-    }
+const isEarlyGoing = totalHours < 8;
 
-    if (todayRecord.Out_time) {
-      return res.status(400).json({ message: "Out time already marked for today" });
-    }
-
-    const distance = getDistanceInMeters(
-      parseFloat(lat),
-      parseFloat(lng),
-      OFFICE_LAT,
-      OFFICE_LNG
-    );
-
-    const isOutside = distance > ALLOWED_RADIUS_METERS;
-
-    // ✅ Robust time parser — handles "6:11 PM", "06:11 PM", "12:00 AM", "12:00 PM"
-    const parseTimeToMinutes = (timeStr) => {
-      const cleaned = timeStr.trim().replace(/\s+/g, " "); // remove extra spaces
-      const match = cleaned.match(/^(\d{1,2}):(\d{2})\s?(AM|PM)$/i);
-
-      if (!match) {
-        console.error("Invalid time format:", JSON.stringify(timeStr));
-        return null;
-      }
-
-      let hours = parseInt(match[1], 10);
-      let minutes = parseInt(match[2], 10);
-      const modifier = match[3].toUpperCase();
-
-      if (modifier === "PM" && hours !== 12) hours += 12;
-      if (modifier === "AM" && hours === 12) hours = 0;
-
-      return hours * 60 + minutes;
-    };
-
-    const inMinutes = parseTimeToMinutes(todayRecord.In_Time);
-    const outMinutes = parseTimeToMinutes(time);
-
-    console.log("In_Time raw :", JSON.stringify(todayRecord.In_Time));
-    console.log("Out_Time raw:", JSON.stringify(time));
-    console.log("inMinutes:", inMinutes, "| outMinutes:", outMinutes);
-
-    if (inMinutes === null || outMinutes === null) {
-      return res.status(400).json({ message: "Invalid time format. Expected format: '6:11 PM'" });
-    }
-
-    if (outMinutes <= inMinutes) {
-      return res.status(400).json({ message: "Out time must be after In time" });
-    }
-
-    const totalMinutes = outMinutes - inMinutes;
-    const hoursWorked = Math.floor(totalMinutes / 60);
-    const minutesWorked = totalMinutes % 60;
-    const totalHoursStr = `${hoursWorked}h ${minutesWorked}m`;
-
-    console.log("totalHoursStr:", totalHoursStr);
-
-    const updated = await userDatamodel.findByIdAndUpdate(
-      todayRecord._id,
-      {
-        Out_time: time.trim(),
-        Out_time_outside: isOutside,
-        Todays_Task: task,
-        reason_for_task_delay: T_reason || "",
-        remarks: remarks || "",
-        total_hours: totalHoursStr,
-      },
-      { returnDocument: "after" }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: isOutside
-        ? "Out time marked — but you are outside office premises. Send approval to your Head"
-        : "Out time marked successfully",
-      isOutside,
-      distance_meters: Math.round(distance),
-      attendance: updated,
+if (isEarlyGoing && !early_going_reason) {
+    return res.status(400).json({
+        success: false,
+        message: "You are leaving early. Please mention a reason."
     });
+}
+        /*
+         * Calculate distance from office
+         */
+        const distance = getDistanceInMeters(
+            parseFloat(lat),
+            parseFloat(lng),
+            OFFICE_LAT,
+            OFFICE_LNG
+        );
 
-  } catch (error) {
-    console.error("Out-Time error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
+        const isOutside =
+            distance > ALLOWED_RADIUS_METERS;
+
+        /*
+         * Update attendance
+         */
+        const updatedResult = await pool.query(
+            `
+            UPDATE members_daily_data
+            SET
+                out_time = $1,
+                out_time_outside = $2,
+                todays_task = $3,
+                reason_for_task_delay = $4,
+                remarks = $5,
+                out_latitude = $6,
+                out_longitude = $7,
+                early_going = $8,
+                early_going_reason = $9,
+                early_going_approved = FALSE,
+                updated_at = NOW()
+
+            WHERE id = $10
+
+            RETURNING *
+            `,
+            [
+                time,
+                isOutside,
+                task || null,
+                T_reason || null,
+                remarks || null,
+                parseFloat(lat),
+                parseFloat(lng),
+                isEarlyGoing,
+                isEarlyGoing
+                    ? early_going_reason
+                    : null,
+                todayRecord.id
+            ]
+        );
+
+        const attendance = updatedResult.rows[0];
+
+        /*
+         * Calculate total hours
+         */
+        const totalHoursResult = await pool.query(
+            `
+            UPDATE members_daily_data
+            SET
+                total_hours_worked = out_time - in_time,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            `,
+            [todayRecord.id]
+        );
+
+        const finalAttendance = totalHoursResult.rows[0];
+
+        return res.status(200).json({
+            success: true,
+
+            message: isEarlyGoing
+                ? "Out time marked — early going request submitted for approval"
+                : isOutside
+                    ? "Out time marked — but you are outside office premises. Send approval to your Head"
+                    : "Out time marked successfully",
+
+            isOutside,
+
+            early_going: isEarlyGoing,
+
+            distance_meters: Math.round(distance),
+
+            attendance: finalAttendance
+        });
+
+    } catch (error) {
+
+        console.error("Out-Time error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
 });
 router.post("/sendOutsideReason", rateLimiter, async (req, res) => {
-  try {
-    const { reason, type ,userId} = req.body; 
-    if (!reason || !type) {
-      return res.status(400).json({ message: "reason and type are required" });
+    try {
+        const {
+            reason,
+            type,
+            userId
+        } = req.body;
+
+        if (!reason || !type || !userId) {
+            return res.status(400).json({
+                success: false,
+                message: "reason, type and userId are required"
+            });
+        }
+
+        if (
+            type !== "In_Time" &&
+            type !== "Out_time"
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "type must be 'In_Time' or 'Out_time'"
+            });
+        }
+
+        /*
+         * Find today's attendance
+         */
+        const attendanceResult = await pool.query(
+            `
+            SELECT *
+            FROM members_daily_data
+            WHERE member_id = $1
+              AND attendance_date = CURRENT_DATE
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const todayRecord = attendanceResult.rows[0];
+
+        console.log("Today's attendance:", todayRecord);
+
+        if (!todayRecord) {
+            return res.status(404).json({
+                success: false,
+                message: "No attendance record found for today"
+            });
+        }
+
+        /*
+         * Determine which reason field to update
+         */
+        const reasonField =
+            type === "In_Time"
+                ? "in_time_outside_reason"
+                : "out_time_outside_reason";
+
+        /*
+         * Update reason
+         *
+         * We cannot parameterize column names using $1,
+         * so we select the column ourselves from a
+         * controlled value above.
+         */
+        const updateQuery = `
+            UPDATE members_daily_data
+            SET
+                ${reasonField} = $1,
+                updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+        `;
+
+        const updatedResult = await pool.query(
+            updateQuery,
+            [
+                reason.trim(),
+                todayRecord.id
+            ]
+        );
+
+        const updatedAttendance =
+            updatedResult.rows[0];
+
+        const memberResult = await pool.query(
+            `
+            SELECT
+                m.id,
+                m.name,
+                m.emp_id,
+                m.department_id,
+                d.name AS department,
+                d.head_id
+            FROM members m
+            LEFT JOIN departments d
+                ON m.department_id = d.id
+            WHERE m.id = $1
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const currentUser =
+            memberResult.rows[0];
+
+        if (!currentUser) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        /*
+         * Check department head
+         */
+        if (!currentUser.head_id) {
+            return res.status(404).json({
+                success: false,
+                message:
+                    "No head found for your department"
+            });
+        }
+
+        /*
+         * Send Firebase notification
+         */
+        const notificationRef = fire_db
+            .ref(`notifications/${currentUser.head_id}`)
+            .push();
+
+        await notificationRef.set({
+            from_user_id: currentUser.id.toString(),
+
+            from_name: currentUser.name,
+
+            to_user_id:
+                currentUser.head_id.toString(),
+
+            department:
+                currentUser.department,
+
+            type,
+
+            reason,
+
+            attendance_id:
+                todayRecord.id.toString(),
+
+            is_read: false,
+
+            timestamp: Date.now()
+        });
+
+        return res.status(200).json({
+            success: true,
+            message:
+                "Reason saved and notification sent to head"
+        });
+
+    } catch (error) {
+
+        console.error(
+            "sendOutsideReason error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
     }
-    if (type !== "In_Time" && type !== "Out_time") {
-      return res.status(400).json({ message: "type must be 'In_Time' or 'Out_time'" });
-    }
-
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const todayRecord = await userDatamodel.findOne({
-      id: userId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    });
-console.log(todayRecord)
-    if (!todayRecord) {
-      return res.status(404).json({ message: "No attendance record found for today" });
-    }
-
-   
-    const isOutsideField = type === "In_Time" ? "In_time_outside" : "Out_time_outside";
-  
-    
-    const reasonField = type === "In_Time" ? "In_Time_reason" : "Out_time_reason";
-    await userDatamodel.findByIdAndUpdate(todayRecord._id, {
-      [reasonField]: reason,
-    });
-
-   
-    const currentUser = await usermodel.findById(userId);
-    if (!currentUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    const head = await departments.findOne({
-      Department: currentUser.Department,
-    });
-
-    if (!head) {
-      return res.status(404).json({ message: "No head found for your department" });
-    }
-
-    const notificationRef = fire_db.ref(`notifications/${head.headId}`).push();
-    await notificationRef.set({
-      from_user_id: userId.toString(),
-      from_name: currentUser.Name,
-      to_user_id: head.headId.toString(),
-      department: currentUser.Department,
-      type,           
-      reason,
-      attendance_id: todayRecord._id.toString(),
-      is_read: false,
-      timestamp: Date.now(),
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Reason saved and notification sent to head",
-    });
-
-  } catch (e) {
-    console.error("sendOutsideReason error:", e);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: e.message,
-    });
-  }
 });
-router.get("/getDepartments",rateLimiter,async(req,res)=>{
-  const allDepartment=await departments.find({}) .populate("headId", "Name Email");
-  if(!allDepartment){
-    return res.status(500).json({message:"internal server error"})
-  }
-  console.log(allDepartment)
-  res.status(200).json({data:allDepartment})
-  
-})
+router.get("/getDepartments", rateLimiter, async (req, res) => {
+    try {
+
+        const result = await pool.query(
+            `
+            SELECT
+                d.id,
+                d.dept_id,
+                d.name,
+                d.created_at,
+                d.updated_at,
+
+                m.id AS head_id,
+                m.name AS head_name,
+                m.email AS head_email
+
+            FROM departments d
+
+            LEFT JOIN members m
+                ON d.head_id = m.id
+
+            ORDER BY d.name ASC
+            `
+        );
+
+        return res.status(200).json({
+            data: result.rows
+        });
+
+    } catch (error) {
+
+        console.error(
+            "getDepartments error:",
+            error
+        );
+
+        return res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
 router.put("/approveOutside", rateLimiter, async (req, res) => {
-  try {
+    try {
+        const {
+            attendanceId,
+            employeeId,
+            type,
+            action,
+            headId,
+            NotificationId
+        } = req.body;
 
-    const { attendanceId, employeeId, type, action, headId, NotificationId } = req.body;
- console.log(attendanceId)
-    if (!attendanceId || !employeeId || !type || !action || !headId) {
-      return res.status(400).json({ message: "attendanceId, employeeId, type, action and headId are required" });
+        console.log("attendanceId:", attendanceId);
+
+        if (
+            !attendanceId ||
+            !employeeId ||
+            !type ||
+            !action ||
+            !headId
+        ) {
+            return res.status(400).json({
+                message:
+                    "attendanceId, employeeId, type, action and headId are required"
+            });
+        }
+
+        if (
+            type !== "In_Time" &&
+            type !== "Out_time"
+        ) {
+            return res.status(400).json({
+                message:
+                    "type must be 'In_Time' or 'Out_time'"
+            });
+        }
+
+        if (
+            action !== "approve" &&
+            action !== "reject"
+        ) {
+            return res.status(400).json({
+                message:
+                    "action must be 'approve' or 'reject'"
+            });
+        }
+
+        /*
+         * Get the head and verify role
+         */
+        const headResult = await pool.query(
+            `
+            SELECT
+                id,
+                name,
+                email,
+                role
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [headId]
+        );
+
+        const head = headResult.rows[0];
+
+        if (!head || head.role !== "head") {
+            return res.status(403).json({
+                message:
+                    "Unauthorized: only heads can approve"
+            });
+        }
+
+        /*
+         * Get attendance + employee + department
+         */
+        const attendanceResult = await pool.query(
+            `
+            SELECT
+                a.*,
+
+                m.id AS employee_id,
+                m.name AS employee_name,
+                m.email AS employee_email,
+                m.department_id,
+
+                d.name AS department_name,
+                d.head_id AS department_head_id
+
+            FROM members_daily_data a
+
+            JOIN members m
+                ON a.member_id = m.id
+
+            LEFT JOIN departments d
+                ON m.department_id = d.id
+
+            WHERE a.id = $1
+              AND a.member_id = $2
+
+            LIMIT 1
+            `,
+            [
+                attendanceId,
+                employeeId
+            ]
+        );
+
+        const attendance =
+            attendanceResult.rows[0];
+
+        if (!attendance) {
+            return res.status(404).json({
+                message:
+                    "Attendance record not found"
+            });
+        }
+
+        /*
+         * Make sure the supplied head is actually
+         * the head of this employee's department.
+         */
+        if (
+            !attendance.department_head_id ||
+            attendance.department_head_id !== head.id
+        ) {
+            return res.status(403).json({
+                message:
+                    "Unauthorized: you are not the head of this employee's department"
+            });
+        }
+
+        /*
+         * Determine approval column
+         */
+        const approvalField =
+            type === "In_Time"
+                ? "in_time_outside_approved"
+                : "out_time_outside_approved";
+
+        /*
+         * Check whether already approved
+         */
+        if (attendance[approvalField]) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    `${type} has already been approved`
+            });
+        }
+
+        const isApproved =
+            action === "approve";
+
+        /*
+         * Update approval
+         */
+        const updateResult = await pool.query(
+            `
+            UPDATE members_daily_data
+            SET
+                ${approvalField} = $1,
+                updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+            `,
+            [
+                isApproved,
+                attendanceId
+            ]
+        );
+
+        const updated =
+            updateResult.rows[0];
+
+        /*
+         * Send notification to employee
+         */
+        const notificationRef = fire_db
+            .ref(`notifications/${employeeId}`)
+            .push();
+
+        await notificationRef.set({
+            from_user_id:
+                head.id.toString(),
+
+            from_name:
+                head.name,
+
+            to_user_id:
+                employeeId.toString(),
+
+            to_name:
+                attendance.employee_name,
+
+            type,
+
+            action,
+
+            attendance_id:
+                attendanceId.toString(),
+
+            message:
+                `Your ${type} outside request has been ${action}d by ${head.name}`,
+
+            is_read: false,
+
+            timestamp: Date.now()
+        });
+
+        /*
+         * Remove notification from head
+         */
+        if (NotificationId) {
+            await fire_db
+                .ref(
+                    `notifications/${headId}/${NotificationId}`
+                )
+                .remove();
+        }
+
+        return res.status(200).json({
+            success: true,
+
+            message:
+                `${type} has been ${action}d successfully`,
+
+            attendance: updated
+        });
+
+    } catch (error) {
+
+        console.error(
+            "approveOutside error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
     }
-
-    if (type !== "In_Time" && type !== "Out_time") {
-      return res.status(400).json({ message: "type must be 'In_Time' or 'Out_time'" });
-    }
-
-    if (action !== "approve" && action !== "reject") {
-      return res.status(400).json({ message: "action must be 'approve' or 'reject'" });
-    }
-    const head = await usermodel.findById(headId);
-    if (!head || head.Role !== "head") {
-      return res.status(403).json({ message: "Unauthorized: only heads can approve" });
-    }
-
-    const attendance = await userDatamodel.findById(attendanceId);
-    if (!attendance) {
-      return res.status(404).json({ message: "Attendance record not found" });
-    }
-
-    const approvalField = type === "In_Time" ? "In_time_approved" : "Out_time_approved";
-    if (attendance[approvalField]) {
-  return res.status(400).json({
-    success: false,
-    message: `${type} has already been approved`,
-  });
-}
-    const isApproved = action === "approve";
-
-    const updated = await userDatamodel.findByIdAndUpdate(
-      attendanceId,
-      { [approvalField]: isApproved },
-    { returnDocument: "after" }
-    );
-
- 
-    const employee = await usermodel.findById(employeeId);
-    if (!employee) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
-
-
-    const notificationRef = fire_db.ref(`notifications/${employeeId}`).push();
-    await notificationRef.set({
-      from_user_id: headId.toString(),
-      from_name: head.Name,
-      to_user_id: employeeId.toString(),
-      to_name: employee.Name,
-      type,                 
-      action,            
-      attendance_id: attendanceId.toString(),
-      message: `Your ${type} outside request has been ${action}d by ${head.Name}`,
-      is_read: false,
-      timestamp: Date.now(),
-    });
-if (NotificationId) {
-  await fire_db.ref(`notifications/${headId}/${NotificationId}`).remove();
-}
-    return res.status(200).json({
-      success: true,
-      message: `${type} has been ${action}d successfully`,
-      attendance: updated,
-    });
-
-  } catch (e) {
-    console.error("approveOutside error:", e);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: e.message,
-    });
-  }
 });
 router.get("/outsideRequest", rateLimiter, async (req, res) => {
-       console.log("came to outsideRequest")
-  try {
- 
-    const { headId } = req.query;
+    console.log("came to outsideRequest");
 
-    if (!headId) {
-      return res.status(400).json({ message: "headId is required" });
+    try {
+        const { headId } = req.query;
+
+        if (!headId) {
+            return res.status(400).json({
+                message: "headId is required"
+            });
+        }
+
+        /*
+         * Verify that the user is actually a department head
+         * and get their department.
+         */
+        const headResult = await pool.query(
+            `
+            SELECT
+                m.id,
+                m.name,
+                m.email,
+                m.role,
+                m.department_id,
+                d.name AS department_name
+            FROM members m
+            JOIN departments d
+                ON m.department_id = d.id
+            WHERE m.id = $1
+              AND LOWER(m.role) = 'head'
+              AND d.head_id = m.id
+            LIMIT 1
+            `,
+            [headId]
+        );
+
+        const head = headResult.rows[0];
+
+        if (!head) {
+            return res.status(403).json({
+                message:
+                    "Unauthorized: only heads can view requests"
+            });
+        }
+
+        /*
+         * Get today's pending outside requests
+         * belonging to employees of this head's department.
+         */
+        const requestsResult = await pool.query(
+            `
+            SELECT
+                a.id AS attendance_id,
+
+                m.id AS employee_id,
+                m.name AS employee_name,
+                m.email AS employee_email,
+
+                a.in_time,
+                a.in_time_outside_reason,
+                a.in_time_outside,
+                a.in_time_outside_approved,
+
+                a.out_time,
+                a.out_time_outside_reason,
+                a.out_time_outside,
+                a.out_time_outside_approved,
+
+                a.attendance_date,
+                a.created_at,
+                a.updated_at
+
+            FROM members_daily_data a
+
+            JOIN members m
+                ON a.member_id = m.id
+
+            WHERE m.department_id = $1
+
+              AND LOWER(m.role) <> 'head'
+
+              AND a.attendance_date = CURRENT_DATE
+
+              AND (
+                    (
+                        a.in_time_outside = TRUE
+                        AND a.in_time_outside_approved = FALSE
+                        AND a.in_time_outside_reason IS NOT NULL
+                        AND TRIM(a.in_time_outside_reason) <> ''
+                    )
+
+                    OR
+
+                    (
+                        a.out_time_outside = TRUE
+                        AND a.out_time_outside_approved = FALSE
+                        AND a.out_time_outside_reason IS NOT NULL
+                        AND TRIM(a.out_time_outside_reason) <> ''
+                    )
+              )
+
+            ORDER BY a.created_at DESC
+            `,
+            [head.department_id]
+        );
+
+        const result = requestsResult.rows.map((record) => ({
+            attendanceId: record.attendance_id,
+
+            employeeId: record.employee_id,
+
+            employeeName:
+                record.employee_name || "Unknown",
+
+            employeeEmail:
+                record.employee_email || "Unknown",
+
+            In_Time: record.in_time,
+
+            In_Time_reason:
+                record.in_time_outside_reason,
+
+            In_time_outside:
+                record.in_time_outside,
+
+            In_time_approved:
+                record.in_time_outside_approved,
+
+            Out_time: record.out_time,
+
+            Out_time_reason:
+                record.out_time_outside_reason,
+
+            Out_time_outside:
+                record.out_time_outside,
+
+            Out_time_approved:
+                record.out_time_outside_approved,
+
+            date: record.created_at
+        }));
+
+        return res.status(200).json({
+            success: true,
+            total: result.length,
+            requests: result
+        });
+
+    } catch (error) {
+
+        console.error(
+            "outsideRequest error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
     }
-
-  
-    const head = await usermodel.findById(headId);
-    if (!head || head.Role !== "head") {
-      return res.status(403).json({ message: "Unauthorized: only heads can view requests" });
-    }
-
-    const employees = await usermodel.find({
-      Department: head.Department,
-      Role: { $ne: "head" }, 
-    }).select("_id Name Email");
-
-    const employeeIds = employees.map((e) => e._id);
-
-    
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const pendingRequests = await userDatamodel.find({
-      id: { $in: employeeIds },
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-      $or: [
-        { In_time_outside: true,  In_time_approved: false,  In_Time_reason: { $ne: "" } },
-        { Out_time_outside: true, Out_time_approved: false, Out_time_reason: { $ne: "" } },
-      ],
-    });
-
-    const result = pendingRequests.map((record) => {
-      const employee = employees.find(
-        (e) => e._id.toString() === record.id.toString()
-      );
-      return {
-        attendanceId: record._id,
-        employeeId:   record.id,
-        employeeName: employee?.Name || "Unknown",
-        employeeEmail: employee?.Email || "Unknown",
-        In_Time:          record.In_Time,
-        In_Time_reason:   record.In_Time_reason,
-        In_time_outside:  record.In_time_outside,
-        In_time_approved: record.In_time_approved,
-        Out_time:          record.Out_time,
-        Out_time_reason:   record.Out_time_reason,
-        Out_time_outside:  record.Out_time_outside,
-        Out_time_approved: record.Out_time_approved,
-        date: record.createdAt,
-      };
-    });
-
-    return res.status(200).json({
-      success: true,
-      total: result.length,
-      requests: result,
-    });
-
-  } catch (e) {
-    console.error("outsideRequest error:", e);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: e.message,
-    });
-  }
 });
+router.get("/get_emp_status", rateLimiter, async (req, res) => {
+
+
+    const { userId } = req.query;
+console.log(userId)
+    if (!userId) {
+        return res.status(400).json({
+            success: false,
+            message: "User ID is required"
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `
+            SELECT
+                a.*,
+
+                m.name AS member_name,
+                m.emp_id,
+                m.email,
+                m.role,
+
+                d.name AS department
+
+            FROM members_daily_data a
+
+            JOIN members m
+                ON a.member_id = m.id
+
+            LEFT JOIN departments d
+                ON m.department_id = d.id
+
+            WHERE a.member_id = $1
+              AND a.attendance_date = CURRENT_DATE
+
+            LIMIT 1
+            `,
+            [userId]
+        );
+
+        const check = result.rows[0];
+
+        /*
+         * No attendance today
+         */
+        if (!check) {
+            return res.status(200).json({
+                success: true,
+                message: "Today attendance not taken"
+            });
+        }
+
+        /*
+         * Outside attendance approval pending
+         */
+        if (
+            (
+                check.in_time_outside &&
+                !check.in_time_outside_approved
+            ) ||
+            (
+                check.out_time_outside &&
+                !check.out_time_outside_approved
+            )
+        ) {
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Attendance is taken but not approved",
+                data: check
+            });
+        }
+
+        /*
+         * IN taken but OUT not taken
+         */
+        if (
+            check.in_time &&
+            !check.out_time
+        ) {
+            return res.status(200).json({
+                success: true,
+                message:
+                    "In time is taken, out time is not taken",
+                data: check
+            });
+        }
+
+        /*
+         * Both IN and OUT taken
+         */
+        if (
+            check.in_time &&
+            check.out_time
+        ) {
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Today's attendance completed",
+                data: check
+            });
+        }
+
+        /*
+         * Fallback
+         */
+        return res.status(200).json({
+            success: true,
+            message:
+                "Attendance status unavailable",
+            data: check
+        });
+
+    } catch (error) {
+
+        console.error(
+            "get_emp_status error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
+});
+router.post("/addDepartment", rateLimiter, async (req, res) => {
+    try {
+        const {
+            deptName,
+            headId,
+            deptId
+        } = req.body;
+
+        if (!deptName || !headId || !deptId) {
+            return res.status(400).json({
+                success: false,
+                message: "All fields are required"
+            });
+        }
+
+        /*
+         * Check whether the department ID already exists
+         */
+        const existingDepartment = await pool.query(
+            `
+            SELECT id
+            FROM departments
+            WHERE dept_id = $1
+            LIMIT 1
+            `,
+            [deptId]
+        );
+
+        if (existingDepartment.rows.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Department ID already exists"
+            });
+        }
+
+        /*
+         * Check whether the department name already exists
+         */
+        const existingName = await pool.query(
+            `
+            SELECT id
+            FROM departments
+            WHERE LOWER(name) = LOWER($1)
+            LIMIT 1
+            `,
+            [deptName.trim()]
+        );
+
+        if (existingName.rows.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Department already exists"
+            });
+        }
+
+        /*
+         * Check whether the head exists
+         */
+        const headResult = await pool.query(
+            `
+            SELECT id, name, role
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [headId]
+        );
+
+        const head = headResult.rows[0];
+
+        if (!head) {
+            return res.status(404).json({
+                success: false,
+                message: "Head not found"
+            });
+        }
+
+        /*
+         * Make sure the selected member is a head
+         */
+        if (head.role.toLowerCase() !== "head") {
+            return res.status(400).json({
+                success: false,
+                message: "Selected member is not a department head"
+            });
+        }
+
+        /*
+         * Create department
+         */
+        const departmentResult = await pool.query(
+            `
+            INSERT INTO departments (
+                dept_id,
+                name,
+                head_id
+            )
+            VALUES ($1, $2, $3)
+            RETURNING *
+            `,
+            [
+                deptId.trim(),
+                deptName.trim(),
+                headId
+            ]
+        );
+
+        const department = departmentResult.rows[0];
+
+        return res.status(201).json({
+            success: true,
+            message: "Successfully added department",
+            department
+        });
+
+    } catch (error) {
+
+        console.error(
+            "addDepartment error:",
+            error
+        );
+
+        /*
+         * PostgreSQL unique constraint
+         */
+        if (error.code === "23505") {
+            return res.status(400).json({
+                success: false,
+                message: "Department ID or name already exists"
+            });
+        }
+
+        /*
+         * Foreign key violation
+         */
+        if (error.code === "23503") {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid department head"
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
+});
+router.post("/getAttendance", rateLimiter, async (req, res) => {
+    try {
+        const { userId, filter } = req.body;
+        // filter: today | week | month | all
+
+        if (!userId) {
+            return res.status(400).json({
+                message: "userId is required"
+            });
+        }
+
+        /*
+         * Build PostgreSQL date condition
+         */
+        let dateCondition = "";
+        const values = [userId];
+
+        if (filter === "today") {
+
+            dateCondition = `
+                AND attendance_date = CURRENT_DATE
+            `;
+
+        } else if (filter === "week") {
+
+            dateCondition = `
+                AND attendance_date >= CURRENT_DATE - INTERVAL '7 days'
+            `;
+
+        } else if (filter === "month") {
+
+            dateCondition = `
+                AND attendance_date >= DATE_TRUNC('month', CURRENT_DATE)::DATE
+            `;
+
+        } else if (
+            filter &&
+            filter !== "all"
+        ) {
+            return res.status(400).json({
+                message:
+                    "Invalid filter. Use today, week, month or all"
+            });
+        }
+
+        /*
+         * Get attendance records
+         */
+        const attendanceResult = await pool.query(
+            `
+            SELECT
+                a.*,
+
+                m.name AS member_name,
+                m.emp_id,
+                m.email,
+
+                d.name AS department
+
+            FROM members_daily_data a
+
+            JOIN members m
+                ON a.member_id = m.id
+
+            LEFT JOIN departments d
+                ON m.department_id = d.id
+
+            WHERE a.member_id = $1
+            ${dateCondition}
+
+            ORDER BY a.attendance_date DESC,
+                     a.created_at DESC
+            `,
+            values
+        );
+
+        const attendance = attendanceResult.rows;
+
+        if (attendance.length === 0) {
+            return res.status(404).json({
+                message: "No attendance records found"
+            });
+        }
+
+        /*
+         * Calculate total worked minutes.
+         *
+         * PostgreSQL returns INTERVAL as a string,
+         * so we calculate using the actual timestamps
+         * instead of parsing "8h 30m".
+         */
+        const totalMinutesResult = await pool.query(
+            `
+            SELECT
+                COALESCE(
+                    SUM(
+                        EXTRACT(
+                            EPOCH FROM total_hours_worked
+                        ) / 60
+                    ),
+                    0
+                ) AS total_minutes
+
+            FROM members_daily_data
+
+            WHERE member_id = $1
+            ${dateCondition}
+            `,
+            values
+        );
+
+        const totalMinutes = Math.round(
+            Number(
+                totalMinutesResult.rows[0]
+                    .total_minutes
+            )
+        );
+
+        const totalDays = attendance.length;
+
+        const avgMinutesPerDay =
+            totalDays > 0
+                ? Math.round(
+                    totalMinutes / totalDays
+                )
+                : 0;
+
+        /*
+         * Convert minutes → "8h 30m"
+         */
+        const formatMinutes = (minutes) => {
+            const hours = Math.floor(
+                minutes / 60
+            );
+
+            const mins = minutes % 60;
+
+            return `${hours}h ${mins}m`;
+        };
+
+        /*
+         * Format attendance response
+         */
+        const formattedAttendance =
+            attendance.map((record) => {
+
+                return {
+                    _id: record.id,
+
+                    id: record.member_id,
+
+                    date:
+                        new Date(
+                            record.attendance_date
+                        ).toLocaleDateString(
+                            "en-IN"
+                        ),
+
+                    In_Time:
+                        record.in_time,
+
+                    delay_in_reason:
+                        record.in_time_late_reason,
+
+                    In_Time_reason:
+                        record.in_time_outside_reason,
+
+                    In_time_outside:
+                        record.in_time_outside,
+
+                    In_time_approved:
+                        record.in_time_outside_approved,
+
+                    Out_time:
+                        record.out_time,
+
+                    Out_time_reason:
+                        record.out_time_outside_reason,
+
+                    Out_time_outside:
+                        record.out_time_outside,
+
+                    Out_time_approved:
+                        record.out_time_outside_approved,
+
+                    Todays_Task:
+                        record.todays_task,
+
+                    reason_for_task_delay:
+                        record.reason_for_task_delay,
+
+                    remarks:
+                        record.remarks,
+
+                    total_hours:
+                        record.total_hours_worked,
+
+                    createdAt:
+                        record.created_at,
+
+                    updatedAt:
+                        record.updated_at
+                };
+            });
+
+        return res.status(200).json({
+            success: true,
+
+            total_days: totalDays,
+
+            total_hours:
+                formatMinutes(totalMinutes),
+
+            avg_per_day:
+                formatMinutes(avgMinutesPerDay),
+
+            attendance:
+                formattedAttendance
+        });
+
+    } catch (error) {
+
+        console.error(
+            "getAttendance error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
+});
+router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
+    try {
+        const { filter } = req.body;
+
+        console.log("filter:", filter);
+
+        let dateCondition = "";
+
+        if (filter === "today") {
+            dateCondition = `
+                AND a.attendance_date = CURRENT_DATE
+            `;
+        } else if (filter === "week") {
+            // Last 7 days — same behavior as your MongoDB API
+            dateCondition = `
+                AND a.attendance_date >= CURRENT_DATE - INTERVAL '7 days'
+            `;
+        } else if (filter === "month") {
+            dateCondition = `
+                AND a.attendance_date >= DATE_TRUNC('month', CURRENT_DATE)::DATE
+            `;
+        } else if (
+            filter &&
+            filter !== "all"
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Invalid filter. Use today, week, month or all"
+            });
+        }
+
+        /*
+         * Get all attendance records with member information.
+         * This replaces Mongoose populate().
+         */
+        const result = await pool.query(
+            `
+            SELECT
+                a.id AS attendance_id,
+                a.member_id,
+
+                a.attendance_date,
+
+                a.in_time,
+                a.in_time_late_reason,
+                a.in_time_outside_reason,
+                a.in_time_outside,
+                a.in_time_outside_approved,
+
+                a.out_time,
+                a.out_time_outside_reason,
+                a.out_time_outside,
+                a.out_time_outside_approved,
+
+                a.todays_task,
+                a.reason_for_task_delay,
+                a.remarks,
+
+                a.total_hours_worked,
+
+                a.created_at,
+                a.updated_at,
+
+                /*
+                 * Member information
+                 */
+                m.id AS member_db_id,
+                m.name,
+                m.email,
+                m.mobile_no,
+                m.role,
+                m.emp_id,
+
+                /*
+                 * Department
+                 */
+                d.id AS department_id,
+                d.name AS department_name
+
+            FROM members_daily_data a
+
+            JOIN members m
+                ON a.member_id = m.id
+
+            LEFT JOIN departments d
+                ON m.department_id = d.id
+
+            WHERE 1 = 1
+
+            ${dateCondition}
+
+            ORDER BY
+                a.created_at DESC
+            `
+        );
+
+        const attendance = result.rows;
+
+        if (attendance.length === 0) {
+            return res.status(404).json({
+                message: "No attendance records found"
+            });
+        }
+
+        /*
+         * Group records by member
+         */
+        const memberMap = {};
+
+        for (const record of attendance) {
+
+            const memberId =
+                record.member_id.toString();
+
+            if (!memberMap[memberId]) {
+
+                memberMap[memberId] = {
+                    member_info: {
+                        _id: record.member_db_id,
+
+                        Name: record.name,
+
+                        Email: record.email,
+
+                        mobile_no:
+                            record.mobile_no,
+
+                        Role:
+                            record.role,
+
+                        Department:
+                            record.department_name,
+
+                        EmpId:
+                            record.emp_id
+                    },
+
+                    records: [],
+
+                    totalMinutes: 0
+                };
+            }
+
+            memberMap[memberId]
+                .records
+                .push(record);
+
+            /*
+             * PostgreSQL INTERVAL → minutes
+             */
+            if (record.total_hours_worked) {
+
+                const totalMinutes =
+                    Number(
+                        record.total_hours_worked
+                            .split(":")[0]
+                    ) * 60
+                    +
+                    Number(
+                        record.total_hours_worked
+                            .split(":")[1]
+                    );
+
+                memberMap[memberId]
+                    .totalMinutes +=
+                    totalMinutes;
+            }
+        }
+
+        /*
+         * Convert minutes to "8h 30m"
+         */
+        const formatMinutes = (minutes) => {
+
+            const hours =
+                Math.floor(minutes / 60);
+
+            const mins =
+                minutes % 60;
+
+            return `${hours}h ${mins}m`;
+        };
+
+        /*
+         * Build member summaries
+         */
+        const members =
+            Object.entries(memberMap)
+                .map(
+                    ([
+                        memberId,
+                        {
+                            member_info,
+                            records,
+                            totalMinutes
+                        }
+                    ]) => {
+
+                        const totalDays =
+                            records.length;
+
+                        const avgMinutesPerDay =
+                            totalDays > 0
+                                ? Math.round(
+                                    totalMinutes /
+                                    totalDays
+                                )
+                                : 0;
+
+                        return {
+                            member_id:
+                                memberId,
+
+                            member_info,
+
+                            total_days:
+                                totalDays,
+
+                            total_hours:
+                                formatMinutes(
+                                    totalMinutes
+                                ),
+
+                            avg_per_day:
+                                formatMinutes(
+                                    avgMinutesPerDay
+                                ),
+
+                            attendance:
+                                records.map(
+                                    (record) => ({
+
+                                        _id:
+                                            record.attendance_id,
+
+                                        date:
+                                            new Date(
+                                                record.attendance_date
+                                            ).toLocaleDateString(
+                                                "en-IN"
+                                            ),
+
+                                        In_Time:
+                                            record.in_time,
+
+                                        delay_in_reason:
+                                            record.in_time_late_reason,
+
+                                        In_Time_reason:
+                                            record.in_time_outside_reason,
+
+                                        In_time_outside:
+                                            record.in_time_outside,
+
+                                        In_time_approved:
+                                            record.in_time_outside_approved,
+
+                                        Out_time:
+                                            record.out_time,
+
+                                        Out_time_reason:
+                                            record.out_time_outside_reason,
+
+                                        Out_time_outside:
+                                            record.out_time_outside,
+
+                                        Out_time_approved:
+                                            record.out_time_outside_approved,
+
+                                        Todays_Task:
+                                            record.todays_task,
+
+                                        reason_for_task_delay:
+                                            record.reason_for_task_delay,
+
+                                        remarks:
+                                            record.remarks,
+
+                                        total_hours:
+                                            record.total_hours_worked,
+
+                                        createdAt:
+                                            record.created_at,
+
+                                        updatedAt:
+                                            record.updated_at
+                                    })
+                                )
+                        };
+                    }
+                );
+
+        /*
+         * Overall total
+         */
+        const overallTotalMinutes =
+            members.reduce(
+                (total, member) => {
+
+                    const hours =
+                        member.total_hours
+                            .match(
+                                /(\d+)h/
+                            );
+
+                    const minutes =
+                        member.total_hours
+                            .match(
+                                /(\d+)m/
+                            );
+
+                    return total
+                        +
+                        (
+                            hours
+                                ? Number(hours[1]) * 60
+                                : 0
+                        )
+                        +
+                        (
+                            minutes
+                                ? Number(minutes[1])
+                                : 0
+                        );
+                },
+                0
+            );
+
+        return res.status(200).json({
+            success: true,
+
+            total_members:
+                members.length,
+
+            total_records:
+                attendance.length,
+
+            overall_total_hours:
+                formatMinutes(
+                    overallTotalMinutes
+                ),
+
+            members
+        });
+
+    } catch (error) {
+
+        console.error(
+            "getAttendanceAdmin error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
+});
+router.put("/updateDepartmentHead", rateLimiter, async (req, res) => {
+    try {
+        const { deptId, headId } = req.body;
+
+        if (!deptId || !headId) {
+            return res.status(400).json({
+                success: false,
+                message: "deptId and headId are required"
+            });
+        }
+
+        /*
+         * Determine whether deptId is:
+         * - PostgreSQL UUID
+         * - Department code such as IT, HR, RND
+         */
+        const isUUID =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+                .test(deptId);
+
+        let departmentResult;
+
+        if (isUUID) {
+            departmentResult = await pool.query(
+                `
+                SELECT
+                    id,
+                    dept_id,
+                    name,
+                    head_id
+                FROM departments
+                WHERE id = $1
+                LIMIT 1
+                `,
+                [deptId]
+            );
+        } else {
+            departmentResult = await pool.query(
+                `
+                SELECT
+                    id,
+                    dept_id,
+                    name,
+                    head_id
+                FROM departments
+                WHERE dept_id = $1
+                LIMIT 1
+                `,
+                [deptId]
+            );
+        }
+
+        const department = departmentResult.rows[0];
+
+        if (!department) {
+            return res.status(404).json({
+                success: false,
+                message: "Department not found"
+            });
+        }
+
+        /*
+         * Find the new head
+         */
+        const headResult = await pool.query(
+            `
+            SELECT
+                id,
+                name,
+                email,
+                role,
+                department_id
+            FROM members
+            WHERE id = $1
+            LIMIT 1
+            `,
+            [headId]
+        );
+
+        const newHead = headResult.rows[0];
+
+        if (!newHead) {
+            return res.status(404).json({
+                success: false,
+                message: "Head member not found"
+            });
+        }
+
+        /*
+         * Check role
+         */
+        if (
+            !newHead.role ||
+            newHead.role.toLowerCase() !== "head"
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Selected member is not a head"
+            });
+        }
+
+        /*
+         * Check department
+         */
+        if (
+            newHead.department_id &&
+            newHead.department_id !== department.id
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Selected head does not belong to this department"
+            });
+        }
+
+        /*
+         * Update department head
+         */
+        const updateResult = await pool.query(
+            `
+            UPDATE departments
+            SET
+                head_id = $1,
+                updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+            `,
+            [
+                newHead.id,
+                department.id
+            ]
+        );
+
+        const updatedDepartment =
+            updateResult.rows[0];
+
+        return res.status(200).json({
+            success: true,
+            message: "Department head updated successfully",
+            department: updatedDepartment
+        });
+
+    } catch (error) {
+
+        console.error(
+            "updateDepartmentHead error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
+        });
+    }
+});
+module.exports = router;
+// router.post("/empL1", rateLimiter, async (req, res) => {
+//   const { time, userId } = req.body;
+
+//   let userids = Array.isArray(userId) ? userId : [userId];
+// const startOfDay = new Date();
+//     startOfDay.setHours(0, 0, 0, 0);
+//     const endOfDay = new Date();
+//     endOfDay.setHours(23, 59, 59, 999);
+
+//   if (!userids.length || userids.some(id => !id)) {
+//     ContentSteeringController.log("user id didn't come");
+//     return res.status(400).json({ message: "not found user id" });
+//   }
+
+//   userids = [...new Set(userids)];
+
+//   try {
+   
+//     const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
+
+//     const existingAliases = existingUsers.map(u => u.id_alias);
+//     const missingIds = userids.filter(id => !existingAliases.includes(id));
+
+//     if (missingIds.length) {
+//       return res.status(404).json({
+//         message: "Some user IDs do not exist",
+//         missingIds
+//       });
+//     }
+
+//     const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
+
+//     const updateResult = await users_data.updateMany(
+//       { id: { $in: mongoIds } },
+//       { $set: { l1: true, l1Time:time.trim() } }
+//     );
+
+//     res.json({
+//       time,
+//       matched: updateResult.matchedCount,
+//       modified: updateResult.modifiedCount
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     return res.status(500).json({ message: "Error verifying user ids" });
+//   }
+// });
+// router.post("/empL2", rateLimiter, async (req, res) => {
+//   const { time, userId } = req.body;
+
+//   let userids = Array.isArray(userId) ? userId : [userId];
+// const startOfDay = new Date();
+//     startOfDay.setHours(0, 0, 0, 0);
+//     const endOfDay = new Date();
+//     endOfDay.setHours(23, 59, 59, 999);
+
+//   if (!userids.length || userids.some(id => !id)) {
+//     ContentSteeringController.log("user id didn't come");
+//     return res.status(400).json({ message: "not found user id" });
+//   }
+
+//   userids = [...new Set(userids)];
+
+//   try {
+   
+//     const existingUsers = await usermodel.find({ id_alias: { $in: userids } }).select("_id id_alias");
+
+//     const existingAliases = existingUsers.map(u => u.id_alias);
+//     const missingIds = userids.filter(id => !existingAliases.includes(id));
+
+//     if (missingIds.length) {
+//       return res.status(404).json({
+//         message: "Some user IDs do not exist",
+//         missingIds
+//       });
+//     }
+
+//     const mongoIds = existingUsers.map(u => u._id); // ObjectIds to match in users_data.id
+
+//     const updateResult = await users_data.updateMany(
+//       { id: { $in: mongoIds } },
+//       { $set: { l2: true, l2Time:time.trim() } }
+//     );
+
+//     res.json({
+//       time,
+//       matched: updateResult.matchedCount,
+//       modified: updateResult.modifiedCount
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     return res.status(500).json({ message: "Error verifying user ids" });
+//   }
+// });
 // router.get("/get_emp_status", rateLimiter, async (req, res) => {
 
 //   console.log("came to get emp status");
@@ -740,324 +2540,3 @@ router.get("/outsideRequest", rateLimiter, async (req, res) => {
 //     data: check,
 //   });
 // });
-router.get("/get_emp_status", rateLimiter, async (req, res) => {
-  console.log("came to get emp status");
-
-  const { userId } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({
-      success: false,
-      message: "User ID is required",
-    });
-  }
-
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date();
-  endOfDay.setHours(23, 59, 59, 999);
-
-  try {
-    const check = await userDatamodel.findOne({
-      id: userId,
-      createdAt: {
-        $gte: startOfDay,
-        $lte: endOfDay,
-      },
-    });
-
-    // No attendance at all
-    if (!check) {
-      return res.status(200).json({
-        success: true,
-        message: "Today attendance not taken",
-      });
-    }
-
-    // Attendance taken but approval pending
-    if (
-      (check.In_time_outside && !check.In_time_approved) ||
-      (check.Out_time_outside && !check.Out_time_approved)
-    ) {
-      return res.status(200).json({
-        success: true,
-        message: "Attendance is taken but not approved",
-        data: check,
-      });
-    }
-
-    // In-time taken, Out-time not taken
-    if (check.In_Time && !check.Out_time) {
-      return res.status(200).json({
-        success: true,
-        message: "In time is taken, out time is not taken",
-        data: check,
-      });
-    }
-
-    // Both taken
-    if (check.In_Time && check.Out_time) {
-      return res.status(200).json({
-        success: true,
-        message: "Today's attendance completed",
-        data: check,
-      });
-    }
-
-    // Fallback
-    return res.status(200).json({
-      success: true,
-      message: "Attendance status unavailable",
-      data: check,
-    });
-  } catch (error) {
-    console.error("get_emp_status error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-});
-router.post("/addDepartment",rateLimiter,async(req,res)=>{
-try{
-      const{deptName,headId,deptId}=req.body
-if(!deptName||!headId||!deptId){
-  return res.status(400).json({message:"all feilds are required"})
-}
-const addDept=await departments.create({
-  headId:headId,
-      deptId:deptId,
-
-  Department:deptName
-})
-if(!addDept){
-  res.status(400).json({message:"error at adding data in departments"})
-}
-res.status(201).json({message:"successfully added department"})
-}catch (error) {
-    console.error("In-Time error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-
-})
-router.post("/getAttendance", rateLimiter, async (req, res) => {
-  try {
-    const { userId, filter } = req.body; // filter: "today" | "week" | "month" | "all"
-
-    if (!userId) {
-      return res.status(400).json({ message: "userId is required" });
-    }
-
-    let dateFilter = {};
-
-    if (filter === "today") {
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      dateFilter = { createdAt: { $gte: startOfDay, $lte: endOfDay } };
-
-    } else if (filter === "week") {
-      const startOfWeek = new Date();
-      startOfWeek.setDate(startOfWeek.getDate() - 7);
-      startOfWeek.setHours(0, 0, 0, 0);
-      dateFilter = { createdAt: { $gte: startOfWeek } };
-
-    } else if (filter === "month") {
-      const startOfMonth = new Date();
-      startOfMonth.setDate(1);
-      startOfMonth.setHours(0, 0, 0, 0);
-      dateFilter = { createdAt: { $gte: startOfMonth } };
-    }
-
-
-    const attendance = await userDatamodel
-      .find({ id: userId, ...dateFilter })
-      .sort({ createdAt: -1 }); 
-
-    if (!attendance || attendance.length === 0) {
-      return res.status(404).json({ message: "No attendance records found" });
-    }
-
-    const totalDays = attendance.length;
-    const totalHoursWorked = attendance.reduce((acc, record) => {
-      if (!record.total_hours) return acc;
-      const match = record.total_hours.match(/(\d+)h\s(\d+)m/);
-      if (!match) return acc;
-      return acc + parseInt(match[1]) * 60 + parseInt(match[2]);
-    }, 0);
-
-    const avgMinutesPerDay = totalDays > 0 ? Math.round(totalHoursWorked / totalDays) : 0;
-
-   return res.status(200).json({
-  success: true,
-  total_days: totalDays,
-  total_hours: `${Math.floor(totalHoursWorked / 60)}h ${totalHoursWorked % 60}m`,
-  avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
-  attendance: attendance.map((record) => ({
-    _id: record._id,
-    id: record.id,
-
-    date: record.createdAt.toLocaleDateString("en-IN"),
-
-    In_Time: record.In_Time,
-    delay_in_reason: record.delay_in_reason,
-    In_Time_reason: record.In_Time_reason,
-    In_time_outside: record.In_time_outside,
-    In_time_approved: record.In_time_approved,
-
-    Out_time: record.Out_time,
-    Out_time_reason: record.Out_time_reason,
-    Out_time_outside: record.Out_time_outside,
-    Out_time_approved: record.Out_time_approved,
-
-    Todays_Task: record.Todays_Task,
-    reason_for_task_delay: record.reason_for_task_delay,
-    remarks: record.remarks,
-
-    total_hours: record.total_hours,
-
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt
-  }))
-});
-
-  } catch (error) {
-    console.error("getAttendance error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-});
-router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
-  try {
-    
-    const { filter } = req.body;
-console.log(filter)
-    let dateFilter = {};
-    if (filter === "today") {
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      dateFilter = { createdAt: { $gte: startOfDay, $lte: endOfDay } };
-    } else if (filter === "week") {
-      const startOfWeek = new Date();
-      startOfWeek.setDate(startOfWeek.getDate() - 7);
-      startOfWeek.setHours(0, 0, 0, 0);
-      dateFilter = { createdAt: { $gte: startOfWeek } };
-    } else if (filter === "month") {
-      const startOfMonth = new Date();
-      startOfMonth.setDate(1);
-      startOfMonth.setHours(0, 0, 0, 0);
-      dateFilter = { createdAt: { $gte: startOfMonth } };
-    }
-
-    // Populate user info from the id field
-    const attendance = await userDatamodel
-      .find({ ...dateFilter })
-      .populate("id", "Name Email mobile_no Role Department EmpId") // 👈 select only needed fields, excludes password
-      .sort({ createdAt: -1 });
-
-    if (!attendance || attendance.length === 0) {
-      return res.status(404).json({ message: "No attendance records found" });
-    }
-
-    const parseMinutes = (total_hours) => {
-      if (!total_hours) return 0;
-      const match = total_hours.match(/(\d+)h\s(\d+)m/);
-      if (!match) return 0;
-      return parseInt(match[1]) * 60 + parseInt(match[2]);
-    };
-
-    // Group by member id
-    const memberMap = {};
-    for (const record of attendance) {
-      const memberId = record.id?._id?.toString();
-      if (!memberId) continue;
-
-      if (!memberMap[memberId]) {
-        memberMap[memberId] = {
-          member_info: {
-            _id: record.id._id,
-            Name: record.id.Name,
-            Email: record.id.Email,
-            mobile_no: record.id.mobile_no,
-            Role: record.id.Role,
-            Department: record.id.Department,
-            EmpId: record.id.EmpId,
-          },
-          records: [],
-          totalMinutes: 0,
-        };
-      }
-
-      memberMap[memberId].records.push(record);
-      memberMap[memberId].totalMinutes += parseMinutes(record.total_hours);
-    }
-
-    // Build per-member summary
-    const members = Object.entries(memberMap).map(([memberId, { member_info, records, totalMinutes }]) => {
-      const totalDays = records.length;
-      const avgMinutesPerDay = totalDays > 0 ? Math.round(totalMinutes / totalDays) : 0;
-
-      return {
-        member_id: memberId,
-        member_info,  // 👈 full user profile here
-        total_days: totalDays,
-        total_hours: `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`,
-        avg_per_day: `${Math.floor(avgMinutesPerDay / 60)}h ${avgMinutesPerDay % 60}m`,
-        attendance: records.map((record) => ({
-          _id: record._id,
-          date: record.createdAt.toLocaleDateString("en-IN"),
-          In_Time: record.In_Time,
-          delay_in_reason: record.delay_in_reason,
-          In_Time_reason: record.In_Time_reason,
-          In_time_outside: record.In_time_outside,
-          In_time_approved: record.In_time_approved,
-          Out_time: record.Out_time,
-          Out_time_reason: record.Out_time_reason,
-          Out_time_outside: record.Out_time_outside,
-          Out_time_approved: record.Out_time_approved,
-          Todays_Task: record.Todays_Task,
-          reason_for_task_delay: record.reason_for_task_delay,
-          remarks: record.remarks,
-          total_hours: record.total_hours,
-          createdAt: record.createdAt,
-          updatedAt: record.updatedAt,
-        })),
-      };
-    });
-
-    const overallTotalMinutes = attendance.reduce(
-      (acc, record) => acc + parseMinutes(record.total_hours),
-      0
-    );
-//console.log(members)
-    return res.status(200).json({
-      success: true,
-      total_members: members.length,
-      total_records: attendance.length,
-      overall_total_hours: `${Math.floor(overallTotalMinutes / 60)}h ${overallTotalMinutes % 60}m`,
-      members,
-    });
-
-  } catch (error) {
-    console.error("getAttendanceAdmin error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-});
-module.exports = router;
