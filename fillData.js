@@ -393,21 +393,57 @@ router.post("/out-timeCCTV", rateLimiter, async (req, res) => {
 });
 router.post("/in-time", rateLimiter, async (req, res) => {
     try {
+
         const {
             lat,
             lng,
             time,
             userId,
-            delay_in_reason,
-           
+            delay_in_reason
         } = req.body;
 
-        if (!lat || !lng || !userId||!time) {
+        // =========================
+        // VALIDATION
+        // =========================
+
+        if (
+            lat === undefined ||
+            lng === undefined ||
+            !userId ||
+            !time
+        ) {
             return res.status(400).json({
                 success: false,
-                message: "lat, lng, and userId are required"
+                message: "lat, lng, userId and time are required"
             });
         }
+
+        // =========================
+        // VALIDATE TIME
+        // =========================
+
+        const inputTime = new Date(time);
+
+        if (Number.isNaN(inputTime.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid time format"
+            });
+        }
+
+        /*
+         * Make sure the frontend sends timezone information.
+         *
+         * Correct:
+         * 2026-08-12T05:00:00+05:30
+         *
+         * Avoid:
+         * 2026-08-12T05:00:00
+         */
+
+        // =========================
+        // FIND MEMBER
+        // =========================
 
         const memberResult = await pool.query(
             `
@@ -431,126 +467,193 @@ router.post("/in-time", rateLimiter, async (req, res) => {
             });
         }
 
+        // =========================
+        // GET TODAY'S DATE IN IST
+        // =========================
+
         /*
-         * Check today's attendance
+         * Do NOT use CURRENT_DATE here if your PostgreSQL
+         * server timezone is UTC.
+         *
+         * We want the attendance date according to India.
          */
-        const existingAttendance = await pool.query(
+
+        const attendanceDateResult = await pool.query(
             `
-            SELECT *
-            FROM members_daily_data
-            WHERE member_id = $1
-              AND attendance_date = CURRENT_DATE
-            LIMIT 1
+            SELECT
+                ($1::timestamptz AT TIME ZONE 'Asia/Kolkata')::date
+                AS attendance_date
             `,
-            [member.id]
+            [time]
         );
+
+        const attendanceDate =
+            attendanceDateResult.rows[0].attendance_date;
+
+        // =========================
+        // CHECK EXISTING ATTENDANCE
+        // =========================
+
+        const existingAttendance =
+            await pool.query(
+                `
+                SELECT *
+                FROM members_daily_data
+                WHERE member_id = $1
+                  AND attendance_date = $2
+                LIMIT 1
+                `,
+                [
+                    member.id,
+                    attendanceDate
+                ]
+            );
 
         if (existingAttendance.rows.length > 0) {
             return res.status(400).json({
                 success: false,
-                message: "Attendance already marked for today"
+                message:
+                    "Attendance already marked for today"
             });
         }
 
-        /*
-         * Calculate distance from office
-         */
-        const distance = getDistanceInMeters(
-            parseFloat(lat),
-            parseFloat(lng),
-            OFFICE_LAT,
-            OFFICE_LNG
-        );
+        // =========================
+        // CALCULATE DISTANCE
+        // =========================
+
+        const distance =
+            getDistanceInMeters(
+                parseFloat(lat),
+                parseFloat(lng),
+                OFFICE_LAT,
+                OFFICE_LNG
+            );
 
         const isOutside =
             distance > ALLOWED_RADIUS_METERS;
-const isLate=await checkLate(time)
-if(isLate){
-    if(!delay_in_reason){
-       
-        return res.status(400).json({message:"you are late to office please enter the delay reason to continue"})
-    }
-    
-}
-        /*
-         * Create attendance
-         */
-       const attendanceResult = await pool.query(
-    `
-    INSERT INTO members_daily_data (
-        member_id,
-        attendance_date,
-        in_time,
-        in_time_outside,
-        in_time_outside_approved,
-        in_time_outside_reason,
-        in_time_late,
-        in_time_late_reason,
-        in_latitude,
-        in_longitude,
-       
-        cctv_in
-    )
-    VALUES (
-        $1,
-        $2::timestamp,
-        $2::timestamp,
-        $3,
-        FALSE,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-        
-        FALSE
-    )
-    RETURNING *
-    `,
-    [
-        member.id,
-        time,
-        isOutside,
-        isOutside ? "Outside office premises" : null,
-        isLate?true:false,
-        delay_in_reason || null,
-        parseFloat(lat),
-        parseFloat(lng),
-      
-    ]
-);
 
-        const attendance = attendanceResult.rows[0];
+        // =========================
+        // CHECK LATE
+        // =========================
 
-       
+        const isLate =
+            await checkLate(time);
+
+        if (isLate && !delay_in_reason) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "You are late to office. Please enter the delay reason to continue."
+            });
+        }
+
+        // =========================
+        // CREATE ATTENDANCE
+        // =========================
+
+        const attendanceResult =
+            await pool.query(
+                `
+                INSERT INTO members_daily_data (
+                    member_id,
+                    attendance_date,
+                    in_time,
+                    in_time_outside,
+                    in_time_outside_approved,
+                    in_time_outside_reason,
+                    in_time_late,
+                    in_time_late_reason,
+                    in_latitude,
+                    in_longitude,
+                    cctv_in
+                )
+                VALUES (
+                    $1,
+                    $2::date,
+
+                    /*
+                     * IMPORTANT:
+                     * Keep timezone information.
+                     */
+                    $3::timestamptz,
+
+                    $4,
+                    FALSE,
+                    $5,
+
+                    $6,
+                    $7,
+
+                    $8,
+                    $9,
+
+                    FALSE
+                )
+                RETURNING *
+                `,
+                [
+                    member.id,
+
+                    // Attendance date in IST
+                    attendanceDate,
+
+                    // Original timezone-aware timestamp
+                    time,
+
+                    isOutside,
+
+                    isOutside
+                        ? "Outside office premises"
+                        : null,
+
+                    isLate,
+
+                    delay_in_reason || null,
+
+                    parseFloat(lat),
+                    parseFloat(lng)
+                ]
+            );
+
+        const attendance =
+            attendanceResult.rows[0];
+
+        // =========================
+        // RESPONSE
+        // =========================
 
         return res.status(201).json({
+
             success: true,
 
-            message: isOutside
-                ? "Attendance marked — but you are outside office premises. Send approval to your Head"
-                : "Attendance marked successfully",
-              
+            message:
+                isOutside
+                    ? "Attendance marked — but you are outside office premises. Send approval to your Head"
+                    : "Attendance marked successfully",
 
             isOutside,
 
-            distance_meters: Math.round(distance),
+            isLate,
+
+            distance_meters:
+                Math.round(distance),
 
             attendance
         });
 
     } catch (error) {
 
-        console.error("In-Time error:", error);
+        console.error(
+            "In-Time error:",
+            error
+        );
 
-        /*
-         * PostgreSQL unique constraint:
-         * one attendance per member per day
-         */
+        // PostgreSQL unique constraint
         if (error.code === "23505") {
             return res.status(400).json({
                 success: false,
-                message: "Attendance already marked for today"
+                message:
+                    "Attendance already marked for today"
             });
         }
 
@@ -575,17 +678,46 @@ router.post("/out-time", rateLimiter, async (req, res) => {
             early_going_reason
         } = req.body;
 
-        if (!lat || !lng || !userId || !time||!task) {
+        // =========================
+        // VALIDATION
+        // =========================
+
+        if (
+            lat === undefined ||
+            lng === undefined ||
+            !userId ||
+            !time ||
+            !task
+        ) {
             return res.status(400).json({
                 success: false,
-                message: "lat, lng, time and userId are required"
+                message: "lat, lng, time, userId and task are required"
             });
         }
 
-        // Find member
+        // =========================
+        // VALIDATE OUT TIME
+        // =========================
+
+        const outTime = new Date(time);
+
+        if (Number.isNaN(outTime.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: `Invalid out time ${time}`
+            });
+        }
+
+        // =========================
+        // FIND MEMBER
+        // =========================
+
         const memberResult = await pool.query(
             `
-            SELECT id, name, emp_id
+            SELECT
+                id,
+                name,
+                emp_id
             FROM members
             WHERE id = $1
             LIMIT 1
@@ -602,7 +734,10 @@ router.post("/out-time", rateLimiter, async (req, res) => {
             });
         }
 
-        // Get today's attendance
+        // =========================
+        // GET TODAY'S ATTENDANCE
+        // =========================
+
         const attendanceResult = await pool.query(
             `
             SELECT *
@@ -616,7 +751,14 @@ router.post("/out-time", rateLimiter, async (req, res) => {
 
         const todayRecord = attendanceResult.rows[0];
 
-        if (!todayRecord || !todayRecord.in_time) {
+        if (!todayRecord) {
+            return res.status(400).json({
+                success: false,
+                message: "Today's attendance record not found"
+            });
+        }
+
+        if (!todayRecord.in_time) {
             return res.status(400).json({
                 success: false,
                 message: "In time is not recorded for today"
@@ -630,124 +772,204 @@ router.post("/out-time", rateLimiter, async (req, res) => {
             });
         }
 
-        /*
-         * Calculate working hours
-         * using frontend time and stored in_time
-         */
-      const inTime = new Date(todayRecord.in_time);
-const outTime = new Date(time);
+        // =========================
+        // CHECK TIME
+        // =========================
 
-const differenceMs = outTime - inTime;
+        const inTime = new Date(todayRecord.in_time);
 
-const totalHours = differenceMs / (1000 * 60 * 60);
+        if (Number.isNaN(inTime.getTime())) {
+            return res.status(500).json({
+                success: false,
+                message: "Invalid in time stored in database"
+            });
+        }
 
-if (totalHours < 0) {
-    return res.status(400).json({
-        success: false,
-        message: "Out time cannot be before in time"
-    });
-}
+        const differenceMs =
+            outTime.getTime() -
+            inTime.getTime();
 
-const isEarlyGoing = totalHours < 8;
+        const totalMinutes =
+            Math.floor(
+                differenceMs / (1000 * 60)
+            );
 
-if (isEarlyGoing && !early_going_reason) {
-    return res.status(400).json({
-        success: false,
-        message: "You are leaving early. Please mention a reason."
-    });
-}
-        /*
-         * Calculate distance from office
-         */
-        const distance = getDistanceInMeters(
-            parseFloat(lat),
-            parseFloat(lng),
-            OFFICE_LAT,
-            OFFICE_LNG
-        );
+        // =========================
+        // OUT TIME BEFORE IN TIME
+        // =========================
+
+        if (differenceMs < 0) {
+
+            console.log("TIME MISMATCH");
+
+            console.log(
+                "DB In Time:",
+                todayRecord.in_time
+            );
+
+            console.log(
+                "Parsed In Time:",
+                inTime.toISOString()
+            );
+
+            console.log(
+                "Received Out Time:",
+                time
+            );
+
+            console.log(
+                "Parsed Out Time:",
+                outTime.toISOString()
+            );
+
+            return res.status(400).json({
+                success: false,
+                message: "Out time cannot be before in time",
+
+                debug: {
+                    in_time:
+                        inTime.toISOString(),
+
+                    out_time:
+                        outTime.toISOString(),
+
+                    difference_minutes:
+                        totalMinutes
+                }
+            });
+        }
+
+        // =========================
+        // EARLY GOING
+        // =========================
+
+        const isEarlyGoing =
+            totalMinutes < (8 * 60);
+
+        if (
+            isEarlyGoing &&
+            !early_going_reason
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "You are leaving early. Please mention a reason."
+            });
+        }
+
+        // =========================
+        // DISTANCE
+        // =========================
+
+        const distance =
+            getDistanceInMeters(
+                parseFloat(lat),
+                parseFloat(lng),
+                OFFICE_LAT,
+                OFFICE_LNG
+            );
 
         const isOutside =
             distance > ALLOWED_RADIUS_METERS;
 
-        /*
-         * Update attendance
-         */
-        const updatedResult = await pool.query(
-            `
-            UPDATE members_daily_data
-            SET
-                out_time = $1,
-                out_time_outside = $2,
-                todays_task = $3,
-                reason_for_task_delay = $4,
-                remarks = $5,
-                out_latitude = $6,
-                out_longitude = $7,
-                early_going = $8,
-                early_going_reason = $9,
-                early_going_approved = FALSE,
-                updated_at = NOW()
+        // =========================
+        // UPDATE OUT TIME
+        // =========================
 
-            WHERE id = $10
+        const updatedResult =
+            await pool.query(
+                `
+                UPDATE members_daily_data
+                SET
+                    out_time = $1,
+                    out_time_outside = $2,
+                    todays_task = $3,
+                    reason_for_task_delay = $4,
+                    remarks = $5,
+                    out_latitude = $6,
+                    out_longitude = $7,
+                    early_going = $8,
+                    early_going_reason = $9,
+                    early_going_approved = FALSE,
+                    updated_at = NOW()
 
-            RETURNING *
-            `,
-            [
-                time,
-                isOutside,
-                task || null,
-                T_reason || null,
-                remarks || null,
-                parseFloat(lat),
-                parseFloat(lng),
-                isEarlyGoing,
-                isEarlyGoing
-                    ? early_going_reason
-                    : null,
-                todayRecord.id
-            ]
-        );
+                WHERE id = $10
 
-        const attendance = updatedResult.rows[0];
+                RETURNING *
+                `,
+                [
+                    outTime,
+                    isOutside,
+                    task || null,
+                    T_reason || null,
+                    remarks || null,
+                    parseFloat(lat),
+                    parseFloat(lng),
+                    isEarlyGoing,
+                    isEarlyGoing
+                        ? early_going_reason
+                        : null,
+                    todayRecord.id
+                ]
+            );
 
-        /*
-         * Calculate total hours
-         */
-        const totalHoursResult = await pool.query(
-            `
-            UPDATE members_daily_data
-            SET
-                total_hours_worked = out_time - in_time,
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            `,
-            [todayRecord.id]
-        );
+        // =========================
+        // CALCULATE TOTAL HOURS
+        // =========================
 
-        const finalAttendance = totalHoursResult.rows[0];
+        const totalHoursResult =
+            await pool.query(
+                `
+                UPDATE members_daily_data
+                SET
+                    total_hours_worked =
+                        out_time - in_time,
+
+                    updated_at = NOW()
+
+                WHERE id = $1
+
+                RETURNING *
+                `,
+                [todayRecord.id]
+            );
+
+        const finalAttendance =
+            totalHoursResult.rows[0];
+
+        // =========================
+        // RESPONSE
+        // =========================
 
         return res.status(200).json({
+
             success: true,
 
-            message: isEarlyGoing
-                ? "Out time marked — early going request submitted for approval"
-                : isOutside
-                    ? "Out time marked — but you are outside office premises. Send approval to your Head"
-                    : "Out time marked successfully",
+            message:
+                isEarlyGoing
+                    ? "Out time marked — early going request submitted for approval"
+                    : isOutside
+                        ? "Out time marked — but you are outside office premises. Send approval to your Head"
+                        : "Out time marked successfully",
 
             isOutside,
 
-            early_going: isEarlyGoing,
+            early_going:
+                isEarlyGoing,
 
-            distance_meters: Math.round(distance),
+            distance_meters:
+                Math.round(distance),
 
-            attendance: finalAttendance
+            attendance:
+                finalAttendance
         });
 
     } catch (error) {
 
-        console.error("Out-Time error:", error);
+        console.error(
+            "Out-Time error:",
+            error
+        );
 
         return res.status(500).json({
             success: false,
@@ -1895,36 +2117,35 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
 
         let dateCondition = "";
 
+        // =========================
+        // DATE FILTER
+        // =========================
+
         if (filter === "today") {
             dateCondition = `
                 AND a.attendance_date = CURRENT_DATE
             `;
         } else if (filter === "week") {
-            // Last 7 days — same behavior as your MongoDB API
+            // Last 7 calendar days including today
             dateCondition = `
-                AND a.attendance_date >= CURRENT_DATE - INTERVAL '7 days'
+                AND a.attendance_date >= CURRENT_DATE - INTERVAL '6 days'
             `;
         } else if (filter === "month") {
             dateCondition = `
                 AND a.attendance_date >= DATE_TRUNC('month', CURRENT_DATE)::DATE
             `;
-        } else if (
-            filter &&
-            filter !== "all"
-        ) {
+        } else if (filter && filter !== "all") {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Invalid filter. Use today, week, month or all"
+                message: "Invalid filter. Use today, week, month or all"
             });
         }
 
-        /*
-         * Get all attendance records with member information.
-         * This replaces Mongoose populate().
-         */
-        const result = await pool.query(
-            `
+        // =========================
+        // GET ATTENDANCE DATA
+        // =========================
+
+        const result = await pool.query(`
             SELECT
                 a.id AS attendance_id,
                 a.member_id,
@@ -1948,11 +2169,25 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
 
                 a.total_hours_worked,
 
+                /*
+                 * PostgreSQL INTERVAL -> minutes
+                 *
+                 * EXTRACT(EPOCH FROM interval)
+                 * returns seconds.
+                 *
+                 * Divide by 60 to get minutes.
+                 */
+                CASE
+                    WHEN a.total_hours_worked IS NOT NULL
+                    THEN EXTRACT(EPOCH FROM a.total_hours_worked) / 60
+                    ELSE 0
+                END AS total_minutes_worked,
+
                 a.created_at,
                 a.updated_at,
 
                 /*
-                 * Member information
+                 * MEMBER INFORMATION
                  */
                 m.id AS member_db_id,
                 m.name,
@@ -1962,7 +2197,7 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
                 m.emp_id,
 
                 /*
-                 * Department
+                 * DEPARTMENT
                  */
                 d.id AS department_id,
                 d.name AS department_name
@@ -1979,28 +2214,35 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
 
             ${dateCondition}
 
-            ORDER BY
-                a.created_at DESC
-            `
-        );
+            ORDER BY a.created_at DESC
+        `);
 
         const attendance = result.rows;
 
+        // =========================
+        // NO RECORDS
+        // =========================
+
         if (attendance.length === 0) {
             return res.status(404).json({
+                success: false,
                 message: "No attendance records found"
             });
         }
 
-        /*
-         * Group records by member
-         */
+        // =========================
+        // GROUP BY MEMBER
+        // =========================
+
         const memberMap = {};
 
         for (const record of attendance) {
 
-            const memberId =
-                record.member_id.toString();
+            const memberId = record.member_id.toString();
+
+            // =========================
+            // CREATE MEMBER
+            // =========================
 
             if (!memberMap[memberId]) {
 
@@ -2012,17 +2254,13 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
 
                         Email: record.email,
 
-                        mobile_no:
-                            record.mobile_no,
+                        mobile_no: record.mobile_no,
 
-                        Role:
-                            record.role,
+                        Role: record.role,
 
-                        Department:
-                            record.department_name,
+                        Department: record.department_name,
 
-                        EmpId:
-                            record.emp_id
+                        EmpId: record.emp_id
                     },
 
                     records: [],
@@ -2031,192 +2269,202 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
                 };
             }
 
-            memberMap[memberId]
-                .records
-                .push(record);
+            // =========================
+            // ADD ATTENDANCE RECORD
+            // =========================
 
-            /*
-             * PostgreSQL INTERVAL → minutes
-             */
-            if (record.total_hours_worked) {
+            memberMap[memberId].records.push(record);
 
-                const totalMinutes =
-                    Number(
-                        record.total_hours_worked
-                            .split(":")[0]
-                    ) * 60
-                    +
-                    Number(
-                        record.total_hours_worked
-                            .split(":")[1]
-                    );
+            // =========================
+            // ADD WORKED MINUTES
+            // =========================
 
-                memberMap[memberId]
-                    .totalMinutes +=
-                    totalMinutes;
+            if (record.total_minutes_worked != null) {
+
+                const totalMinutes = Math.round(
+                    Number(record.total_minutes_worked)
+                );
+
+                if (!Number.isNaN(totalMinutes)) {
+
+                    memberMap[memberId].totalMinutes +=
+                        totalMinutes;
+                }
             }
         }
 
-        /*
-         * Convert minutes to "8h 30m"
-         */
+        // =========================
+        // FORMAT MINUTES
+        // =========================
+
         const formatMinutes = (minutes) => {
 
+            const safeMinutes =
+                Number(minutes) || 0;
+
             const hours =
-                Math.floor(minutes / 60);
+                Math.floor(safeMinutes / 60);
 
             const mins =
-                minutes % 60;
+                safeMinutes % 60;
 
             return `${hours}h ${mins}m`;
         };
 
-        /*
-         * Build member summaries
-         */
-        const members =
-            Object.entries(memberMap)
-                .map(
-                    ([
-                        memberId,
-                        {
-                            member_info,
-                            records,
-                            totalMinutes
-                        }
-                    ]) => {
+        // =========================
+        // BUILD MEMBER SUMMARY
+        // =========================
 
-                        const totalDays =
-                            records.length;
-
-                        const avgMinutesPerDay =
-                            totalDays > 0
-                                ? Math.round(
-                                    totalMinutes /
-                                    totalDays
-                                )
-                                : 0;
-
-                        return {
-                            member_id:
-                                memberId,
-
-                            member_info,
-
-                            total_days:
-                                totalDays,
-
-                            total_hours:
-                                formatMinutes(
-                                    totalMinutes
-                                ),
-
-                            avg_per_day:
-                                formatMinutes(
-                                    avgMinutesPerDay
-                                ),
-
-                            attendance:
-                                records.map(
-                                    (record) => ({
-
-                                        _id:
-                                            record.attendance_id,
-
-                                        date:
-                                            new Date(
-                                                record.attendance_date
-                                            ).toLocaleDateString(
-                                                "en-IN"
-                                            ),
-
-                                        In_Time:
-                                            record.in_time,
-
-                                        delay_in_reason:
-                                            record.in_time_late_reason,
-
-                                        In_Time_reason:
-                                            record.in_time_outside_reason,
-
-                                        In_time_outside:
-                                            record.in_time_outside,
-
-                                        In_time_approved:
-                                            record.in_time_outside_approved,
-
-                                        Out_time:
-                                            record.out_time,
-
-                                        Out_time_reason:
-                                            record.out_time_outside_reason,
-
-                                        Out_time_outside:
-                                            record.out_time_outside,
-
-                                        Out_time_approved:
-                                            record.out_time_outside_approved,
-
-                                        Todays_Task:
-                                            record.todays_task,
-
-                                        reason_for_task_delay:
-                                            record.reason_for_task_delay,
-
-                                        remarks:
-                                            record.remarks,
-
-                                        total_hours:
-                                            record.total_hours_worked,
-
-                                        createdAt:
-                                            record.created_at,
-
-                                        updatedAt:
-                                            record.updated_at
-                                    })
-                                )
-                        };
+        const members = Object.entries(memberMap)
+            .map(
+                ([
+                    memberId,
+                    {
+                        member_info,
+                        records,
+                        totalMinutes
                     }
-                );
+                ]) => {
 
-        /*
-         * Overall total
-         */
+                    const totalDays =
+                        records.length;
+
+                    const avgMinutesPerDay =
+                        totalDays > 0
+                            ? Math.round(
+                                totalMinutes /
+                                totalDays
+                            )
+                            : 0;
+
+                    return {
+
+                        member_id:
+                            memberId,
+
+                        member_info,
+
+                        total_days:
+                            totalDays,
+
+                        total_hours:
+                            formatMinutes(
+                                totalMinutes
+                            ),
+
+                        avg_per_day:
+                            formatMinutes(
+                                avgMinutesPerDay
+                            ),
+
+                        attendance:
+                            records.map(
+                                (record) => ({
+
+                                    _id:
+                                        record.attendance_id,
+
+                                    date:
+                                        new Date(
+                                            record.attendance_date
+                                        ).toLocaleDateString(
+                                            "en-IN"
+                                        ),
+
+                                    In_Time:
+                                        record.in_time,
+
+                                    delay_in_reason:
+                                        record.in_time_late_reason,
+
+                                    In_Time_reason:
+                                        record.in_time_outside_reason,
+
+                                    In_time_outside:
+                                        record.in_time_outside,
+
+                                    In_time_approved:
+                                        record.in_time_outside_approved,
+
+                                    Out_time:
+                                        record.out_time,
+
+                                    Out_time_reason:
+                                        record.out_time_outside_reason,
+
+                                    Out_time_outside:
+                                        record.out_time_outside,
+
+                                    Out_time_approved:
+                                        record.out_time_outside_approved,
+
+                                    Todays_Task:
+                                        record.todays_task,
+
+                                    reason_for_task_delay:
+                                        record.reason_for_task_delay,
+
+                                    remarks:
+                                        record.remarks,
+
+                                    total_hours:
+                                        record.total_hours_worked,
+
+                                    createdAt:
+                                        record.created_at,
+
+                                    updatedAt:
+                                        record.updated_at
+                                })
+                            )
+                    };
+                }
+            );
+
+        // =========================
+        // OVERALL TOTAL
+        // =========================
+
         const overallTotalMinutes =
             members.reduce(
                 (total, member) => {
 
+                    const totalHours =
+                        member.total_hours;
+
+                    const hoursMatch =
+                        totalHours.match(
+                            /(\d+)h/
+                        );
+
+                    const minutesMatch =
+                        totalHours.match(
+                            /(\d+)m/
+                        );
+
                     const hours =
-                        member.total_hours
-                            .match(
-                                /(\d+)h/
-                            );
+                        hoursMatch
+                            ? Number(hoursMatch[1])
+                            : 0;
 
                     const minutes =
-                        member.total_hours
-                            .match(
-                                /(\d+)m/
-                            );
+                        minutesMatch
+                            ? Number(minutesMatch[1])
+                            : 0;
 
-                    return total
-                        +
-                        (
-                            hours
-                                ? Number(hours[1]) * 60
-                                : 0
-                        )
-                        +
-                        (
-                            minutes
-                                ? Number(minutes[1])
-                                : 0
-                        );
+                    return total +
+                        (hours * 60) +
+                        minutes;
                 },
                 0
             );
 
+        // =========================
+        // RESPONSE
+        // =========================
+
         return res.status(200).json({
+
             success: true,
 
             total_members:
@@ -2241,9 +2489,14 @@ router.post("/getAttendanceAdmin", rateLimiter, async (req, res) => {
         );
 
         return res.status(500).json({
+
             success: false,
-            message: "Server error",
-            error: error.message
+
+            message:
+                "Server error",
+
+            error:
+                error.message
         });
     }
 });
